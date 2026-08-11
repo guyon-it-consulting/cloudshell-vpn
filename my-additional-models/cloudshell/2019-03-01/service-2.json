@@ -1,0 +1,299 @@
+{
+  "metadata": {
+    "apiVersion": "2019-03-01",
+    "auth":["aws.auth#sigv4"],
+    "endpointPrefix": "cloudshell",
+    "protocol": "rest-json",
+    "protocols":["rest-json"],
+    "serviceFullName": "AWS CloudShell",
+    "serviceId": "CloudShell",
+    "signatureVersion": "v4",
+    "signingName": "cloudshell",
+    "uid": "cloudshell-2019-03-01"
+  },
+  "documentation": "<p>AWS CloudShell provides a browser-based, pre-authenticated shell environment in the AWS Management Console. This is an unofficial API model reverse-engineered from the AWS Console. AWS can change or break it at any time without notice.</p>",
+  "operations": {
+    "DescribeEnvironments": {
+      "name": "DescribeEnvironments",
+      "http": { "method": "POST", "requestUri": "/describeEnvironments" },
+      "input": { "shape": "EmptyInput" },
+      "output": { "shape": "DescribeEnvironmentsOutput" },
+      "documentation": "<p>Lists all CloudShell environments for the current IAM principal.</p>"
+    },
+    "CreateEnvironment": {
+      "name": "CreateEnvironment",
+      "http": { "method": "POST", "requestUri": "/createEnvironment" },
+      "input": { "shape": "CreateEnvironmentInput" },
+      "output": { "shape": "EnvironmentOutput" },
+      "documentation": "<p>Creates a new CloudShell environment. Call with no arguments for a public environment, or pass <code>EnvironmentName</code> and <code>VpcConfig</code> for a VPC environment. VPC environments require additional IAM permissions such as <code>ec2:CreateNetworkInterface</code> and <code>ec2:CreateTags</code>. There is a maximum of 2 VPC environments per IAM principal.</p>"
+    },
+    "StartEnvironment": {
+      "name": "StartEnvironment",
+      "http": { "method": "POST", "requestUri": "/startEnvironment" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "documentation": "<p>Starts a suspended CloudShell environment. The environment must be in <code>SUSPENDED</code> state.</p>"
+    },
+    "StopEnvironment": {
+      "name": "StopEnvironment",
+      "http": { "method": "POST", "requestUri": "/stopEnvironment" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "output": { "shape": "EnvironmentIdOutput" },
+      "documentation": "<p>Stops a running CloudShell environment. The environment transitions to <code>SUSPENDED</code> state.</p>"
+    },
+    "GetEnvironmentStatus": {
+      "name": "GetEnvironmentStatus",
+      "http": { "method": "POST", "requestUri": "/getEnvironmentStatus" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "output": { "shape": "GetEnvironmentStatusOutput" },
+      "documentation": "<p>Gets the current status of a CloudShell environment. Possible statuses include <code>CREATING</code>, <code>RUNNING</code>, and <code>SUSPENDED</code>.</p>"
+    },
+    "CreateSession": {
+      "name": "CreateSession",
+      "http": { "method": "POST", "requestUri": "/createSession" },
+      "input": { "shape": "CreateSessionInput" },
+      "output": { "shape": "CreateSessionOutput" },
+      "documentation": "<p>Creates an interactive SSM WebSocket session to a running CloudShell environment. Use the returned <code>StreamUrl</code>, <code>SessionId</code>, and <code>TokenValue</code> with <code>session-manager-plugin</code> to get an interactive shell.</p>"
+    },
+    "SendHeartBeat": {
+      "name": "SendHeartBeat",
+      "http": { "method": "POST", "requestUri": "/sendHeartBeat" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "documentation": "<p>Sends a heartbeat to keep a CloudShell environment alive. Environments go to sleep after a period of inactivity.</p>"
+    },
+    "DeleteSession": {
+      "name": "DeleteSession",
+      "http": { "method": "POST", "requestUri": "/deleteSession" },
+      "input": { "shape": "DeleteSessionInput" },
+      "documentation": "<p>Deletes an active session from a CloudShell environment.</p>"
+    },
+    "DeleteEnvironment": {
+      "name": "DeleteEnvironment",
+      "http": { "method": "POST", "requestUri": "/deleteEnvironment" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "documentation": "<p>Deletes a CloudShell environment. The environment must be in <code>RUNNING</code> or <code>SUSPENDED</code> state.</p>"
+    },
+    "GetFileUploadUrls": {
+      "name": "GetFileUploadUrls",
+      "http": { "method": "POST", "requestUri": "/getFileUploadUrls" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "output": { "shape": "FileTransferOutput" },
+      "documentation": "<p>Gets S3 presigned URLs and form fields to upload a file into the environment's home directory. Use the returned URL and fields in a multipart POST request.</p>"
+    },
+    "GetFileDownloadUrls": {
+      "name": "GetFileDownloadUrls",
+      "http": { "method": "POST", "requestUri": "/getFileDownloadUrls" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "output": { "shape": "FileTransferOutput" },
+      "documentation": "<p>Gets S3 presigned URLs to download a file from the environment.</p>"
+    },
+    "PutCredentials": {
+      "name": "PutCredentials",
+      "http": { "method": "POST", "requestUri": "/putCredentials" },
+      "input": { "shape": "EnvironmentIdInput" },
+      "documentation": "<p>Forwards console credentials to the environment. This is used internally by the AWS Console and requires a console session token. It is not usable programmatically and will return a <code>TokenDecryptionException</code>. To inject credentials into a shell session, export them as environment variables instead.</p>"
+    }
+  },
+  "shapes": {
+    "EmptyInput": {
+      "type": "structure",
+      "members": {},
+      "documentation": "<p>An empty request body.</p>"
+    },
+    "CreateEnvironmentInput": {
+      "type": "structure",
+      "members": {
+        "EnvironmentName": {
+          "shape": "String",
+          "documentation": "<p>Display name for the environment. Required when creating a VPC environment.</p>"
+        },
+        "VpcConfig": {
+          "shape": "VpcConfig",
+          "documentation": "<p>VPC configuration for the environment. When provided, creates a VPC-attached environment instead of a public one.</p>"
+        }
+      },
+      "documentation": "<p>Input for the <code>CreateEnvironment</code> operation.</p>"
+    },
+    "VpcConfig": {
+      "type": "structure",
+      "required": ["VpcId", "SubnetIds", "SecurityGroupIds"],
+      "members": {
+        "VpcId": {
+          "shape": "String",
+          "documentation": "<p>The ID of the VPC to attach the environment to.</p>"
+        },
+        "SubnetIds": {
+          "shape": "StringList",
+          "documentation": "<p>A list of subnet IDs within the VPC for the environment.</p>"
+        },
+        "SecurityGroupIds": {
+          "shape": "StringList",
+          "documentation": "<p>A list of security group IDs to associate with the environment. Maximum of 5 security groups.</p>"
+        }
+      },
+      "documentation": "<p>VPC configuration for a CloudShell environment. Requires additional IAM permissions including <code>ec2:CreateNetworkInterface</code> and <code>ec2:CreateTags</code>.</p>"
+    },
+    "EnvironmentIdInput": {
+      "type": "structure",
+      "required": ["EnvironmentId"],
+      "members": {
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the CloudShell environment.</p>"
+        }
+      },
+      "documentation": "<p>Input containing a CloudShell environment identifier.</p>"
+    },
+    "EnvironmentIdOutput": {
+      "type": "structure",
+      "members": {
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the CloudShell environment.</p>"
+        }
+      },
+      "documentation": "<p>Output containing a CloudShell environment identifier.</p>"
+    },
+    "DeleteSessionInput": {
+      "type": "structure",
+      "required": ["EnvironmentId", "SessionId"],
+      "members": {
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the CloudShell environment.</p>"
+        },
+        "SessionId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the session to delete.</p>"
+        }
+      },
+      "documentation": "<p>Input for the <code>DeleteSession</code> operation.</p>"
+    },
+    "CreateSessionInput": {
+      "type": "structure",
+      "required": ["EnvironmentId", "SessionType", "TabId"],
+      "members": {
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the target CloudShell environment.</p>"
+        },
+        "SessionType": {
+          "shape": "String",
+          "documentation": "<p>The type of session to create. Use <code>TMUX</code>.</p>"
+        },
+        "TabId": {
+          "shape": "String",
+          "documentation": "<p>A unique tab identifier. Must be a valid UUID v4.</p>"
+        },
+        "QCliDisabled": {
+          "shape": "Boolean",
+          "documentation": "<p>Whether to disable Amazon Q CLI integration in the session.</p>"
+        }
+      },
+      "documentation": "<p>Input for the <code>CreateSession</code> operation.</p>"
+    },
+    "DescribeEnvironmentsOutput": {
+      "type": "structure",
+      "members": {
+        "Environments": {
+          "shape": "EnvironmentList",
+          "documentation": "<p>A list of CloudShell environments owned by the current IAM principal.</p>"
+        }
+      },
+      "documentation": "<p>Output for the <code>DescribeEnvironments</code> operation.</p>"
+    },
+    "EnvironmentOutput": {
+      "type": "structure",
+      "members": {
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the CloudShell environment.</p>"
+        },
+        "Status": {
+          "shape": "String",
+          "documentation": "<p>The current status of the environment (e.g. <code>CREATING</code>, <code>RUNNING</code>, <code>SUSPENDED</code>).</p>"
+        }
+      },
+      "documentation": "<p>Describes a CloudShell environment.</p>"
+    },
+    "EnvironmentList": {
+      "type": "list",
+      "member": { "shape": "EnvironmentOutput" },
+      "documentation": "<p>A list of CloudShell environments.</p>"
+    },
+    "GetEnvironmentStatusOutput": {
+      "type": "structure",
+      "members": {
+        "Status": {
+          "shape": "String",
+          "documentation": "<p>The current status of the environment (e.g. <code>CREATING</code>, <code>RUNNING</code>, <code>SUSPENDED</code>).</p>"
+        },
+        "EnvironmentId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the CloudShell environment.</p>"
+        },
+        "StatusReason": {
+          "shape": "String",
+          "documentation": "<p>A human-readable reason for the current status, or <code>null</code> if not applicable.</p>"
+        }
+      },
+      "documentation": "<p>Output for the <code>GetEnvironmentStatus</code> operation.</p>"
+    },
+    "CreateSessionOutput": {
+      "type": "structure",
+      "members": {
+        "SessionId": {
+          "shape": "String",
+          "documentation": "<p>The unique identifier of the created session.</p>"
+        },
+        "TokenValue": {
+          "shape": "String",
+          "documentation": "<p>The token value used to authenticate the SSM session.</p>"
+        },
+        "StreamUrl": {
+          "shape": "String",
+          "documentation": "<p>The WebSocket URL for the SSM session. Use with <code>session-manager-plugin</code> to connect.</p>"
+        }
+      },
+      "documentation": "<p>Output for the <code>CreateSession</code> operation. Contains the information needed to connect via <code>session-manager-plugin</code>.</p>"
+    },
+    "FileTransferOutput": {
+      "type": "structure",
+      "members": {
+        "FileUploadPresignedUrl": {
+          "shape": "String",
+          "documentation": "<p>The S3 presigned URL to use as the POST target for file uploads.</p>"
+        },
+        "FileUploadPresignedFields": {
+          "shape": "MapStringString",
+          "documentation": "<p>A map of form fields to include in the multipart POST request when uploading a file.</p>"
+        },
+        "FileDownloadPresignedUrl": {
+          "shape": "String",
+          "documentation": "<p>The S3 presigned URL to download a file from the environment.</p>"
+        },
+        "FileDownloadPresignedKey": {
+          "shape": "String",
+          "documentation": "<p>The S3 key for the file download.</p>"
+        },
+        "FileDownloadPresignedKeyHash": {
+          "shape": "String",
+          "documentation": "<p>The hash of the S3 key for the file download.</p>"
+        }
+      },
+      "documentation": "<p>Output containing S3 presigned URLs and fields for file upload and download operations.</p>"
+    },
+    "MapStringString": {
+      "type": "map",
+      "key": { "shape": "String" },
+      "value": { "shape": "String" },
+      "documentation": "<p>A map of string key-value pairs.</p>"
+    },
+    "String": { "type": "string" },
+    "Boolean": { "type": "boolean" },
+    "StringList": {
+      "type": "list",
+      "member": { "shape": "String" },
+      "documentation": "<p>A list of strings.</p>"
+    }
+  }
+}
