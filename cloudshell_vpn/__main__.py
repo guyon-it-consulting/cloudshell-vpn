@@ -22,6 +22,10 @@ import threading
 import time
 from pathlib import Path
 
+# Cloudflare: shorter retention than Google's resolvers, and no ad profile.
+# Override with --dns.
+DEFAULT_DNS = ["1.1.1.1", "1.0.0.1"]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -90,6 +94,7 @@ def generate_ovpn_conf(
     pki: dict[str, str],
     local_port: int,
     exclude_ips: list[str],
+    dns_servers: list[str] | None = None,
 ) -> str:
     """Generate OpenVPN .ovpn config with inline certs and net_gateway routes.
 
@@ -104,6 +109,10 @@ def generate_ovpn_conf(
     for ip in exclude_ips:
         route_lines.append(f"route {ip} 255.255.255.255 net_gateway")
     routes = "\n".join(route_lines)
+
+    dns_lines = "\n".join(
+        f"dhcp-option DNS {ip}" for ip in (dns_servers or DEFAULT_DNS)
+    )
 
     return f"""# CloudShell VPN - OpenVPN Config
 # Auto-imported into OpenVPN Connect
@@ -132,8 +141,7 @@ redirect-gateway def1
 {routes}
 
 # DNS
-dhcp-option DNS 8.8.8.8
-dhcp-option DNS 8.8.4.4
+{dns_lines}
 
 # Performance
 sndbuf 524288
@@ -168,6 +176,7 @@ def run_openvpn_with_callbacks(
     log_callback,
     status_callback,
     stop_event,
+    dns_servers: list[str] | None = None,
 ) -> None:
     """Run OpenVPN with TUI callbacks for status updates."""
     from .common import (
@@ -242,6 +251,7 @@ def run_openvpn_with_callbacks(
         # command runs under sudo — quote every interpolated value regardless.
         shell.send(
             f"export TA_KEY_B64={shlex.quote(ta_key_b64)} && "
+            f"export VPN_DNS={shlex.quote(','.join(dns_servers or DEFAULT_DNS))} && "
             f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} "
             f"{shlex.quote(f'{local_ip}:{local_port}')} "
             f"{shlex.quote(ca_b64)} {shlex.quote(server_cert_b64)} "
@@ -287,7 +297,7 @@ def run_openvpn_with_callbacks(
         exclude_ips = [agent_ip]
         start_heartbeat(cs, env_id)
 
-        conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips)
+        conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips, dns_servers)
         from .common import DATA_DIR
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
@@ -431,7 +441,7 @@ def run_openvpn_with_callbacks(
         log_msg("Disconnected.")
 
 
-def run_openvpn(region: str) -> None:
+def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
     """Run VPN using OpenVPN.
 
     Route exclusions are handled in the .ovpn config via
@@ -512,6 +522,7 @@ def run_openvpn(region: str) -> None:
         # command runs under sudo — quote every interpolated value regardless.
         shell.send(
             f"export TA_KEY_B64={shlex.quote(ta_key_b64)} && "
+            f"export VPN_DNS={shlex.quote(','.join(dns_servers or DEFAULT_DNS))} && "
             f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} "
             f"{shlex.quote(f'{local_ip}:{local_port}')} "
             f"{shlex.quote(ca_b64)} {shlex.quote(server_cert_b64)} "
@@ -567,7 +578,7 @@ def run_openvpn(region: str) -> None:
         start_heartbeat(cs, env_id)
 
         # Write OpenVPN config file
-        conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips)
+        conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips, dns_servers)
         from .common import DATA_DIR
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
@@ -673,7 +684,31 @@ def main() -> None:
         "--no-tui", action="store_true",
         help="Disable TUI, use simple log output",
     )
+    p.add_argument(
+        "--dns",
+        help=f"Comma-separated DNS servers pushed to the client "
+             f"(default: {','.join(DEFAULT_DNS)})",
+    )
     args = p.parse_args()
+
+    # Validate DNS before any AWS call — these end up in the .ovpn file,
+    # which is read by a privileged binary.
+    dns_servers = None
+    if args.dns:
+        import ipaddress
+        dns_servers = []
+        for entry in args.dns.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                dns_servers.append(str(ipaddress.IPv4Address(entry)))
+            except ValueError:
+                print(f"ERROR: invalid DNS address: {entry!r}", file=sys.stderr)
+                sys.exit(1)
+        if not dns_servers:
+            print("ERROR: --dns was empty", file=sys.stderr)
+            sys.exit(1)
 
     # Override AWS profile if specified
     if args.profile:
@@ -705,7 +740,7 @@ def main() -> None:
         # Direct region or no-tui flag - use classic mode
         region = args.region or pick_region()
         log.info(f"Selected region: {region}")
-        run_openvpn(region)
+        run_openvpn(region, dns_servers)
     else:
         # Full TUI mode - disable standard logging
         logging.disable(logging.CRITICAL)
@@ -715,7 +750,9 @@ def main() -> None:
         regions = list_regions()
         
         def vpn_runner(region, log_callback, status_callback, stop_event):
-            run_openvpn_with_callbacks(region, log_callback, status_callback, stop_event)
+            run_openvpn_with_callbacks(
+                region, log_callback, status_callback, stop_event, dns_servers
+            )
         
         run_vpn_tui(regions, vpn_runner)
 

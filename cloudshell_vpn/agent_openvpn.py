@@ -42,8 +42,15 @@ def _run(cmd: str, check: bool = False) -> int:
     return r
 
 
-def setup_openvpn(ca_cert: str, server_cert: str, server_key: str, ta_key: str) -> None:
+def setup_openvpn(
+    ca_cert: str,
+    server_cert: str,
+    server_key: str,
+    ta_key: str,
+    dns_servers: list[str] | None = None,
+) -> None:
     """Set up OpenVPN server with provided PKI."""
+    dns_servers = dns_servers or ["1.1.1.1", "1.0.0.1"]
     print("SETUP: Installing openvpn...", flush=True)
     _run("sudo dnf install -y openvpn iptables iproute")
 
@@ -65,6 +72,8 @@ def setup_openvpn(ca_cert: str, server_cert: str, server_key: str, ta_key: str) 
     # Write server config
     # Note: OpenVPN listens on 127.0.0.1:1194 — our relay bridges to external
     # Using 'dh none' to use ECDH instead of DH (no separate DH file needed)
+    # Keep the pushed DNS in sync with what the client config already sets.
+    dns_push = "\n".join(f'push "dhcp-option DNS {ip}"' for ip in dns_servers)
     server_conf = f"""# CloudShell VPN OpenVPN Server
 local 127.0.0.1
 port {OVPN_PORT}
@@ -88,8 +97,7 @@ ecdh-curve prime256v1
 server {OVPN_SUBNET}.0 255.255.255.0
 topology subnet
 push "redirect-gateway def1 bypass-dhcp"
-push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 8.8.4.4"
+{dns_push}
 
 # Performance
 sndbuf 524288
@@ -292,10 +300,24 @@ def main() -> None:
         print("AGENT_ERROR: TA_KEY_B64 environment variable not set", flush=True)
         sys.exit(1)
 
+    # DNS servers come via env var (like TA_KEY_B64) to keep the arg list stable.
+    # Already validated laptop-side; re-validate here since this reaches a config
+    # file read by a privileged binary.
+    dns_servers = []
+    for entry in os.environ.get("VPN_DNS", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            dns_servers.append(str(ipaddress.IPv4Address(entry)))
+        except ValueError:
+            print(f"AGENT_ERROR: invalid DNS address: {entry!r}", flush=True)
+            sys.exit(1)
+
     print(f"AGENT: Starting with port={udp_port}, laptop={laptop_addr}", flush=True)
 
     # Set up OpenVPN
-    setup_openvpn(ca_cert, server_cert, server_key, ta_key)
+    setup_openvpn(ca_cert, server_cert, server_key, ta_key, dns_servers)
 
     # Bind UDP socket
     print(f"AGENT: Binding UDP socket to port {udp_port}", flush=True)
