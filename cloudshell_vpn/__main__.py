@@ -183,6 +183,7 @@ def run_openvpn_with_callbacks(
     """Run OpenVPN with TUI callbacks for status updates."""
     from .common import (
         AGENT_UDP_PORT,
+        MAX_UDP_PAYLOAD,
         OVPN_PORT,
         AgentError,
         Shell,
@@ -214,6 +215,8 @@ def run_openvpn_with_callbacks(
     wait_for_running(cs, env_id)
 
     shell = Shell(cs, env_id, region)
+    udp = None
+    ovpn_sock = None
     try:
         log_msg("Uploading OpenVPN agent to CloudShell...")
         upload_agent(shell)
@@ -302,8 +305,10 @@ def run_openvpn_with_callbacks(
         conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips, dns_servers)
         from .common import DATA_DIR
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(DATA_DIR, 0o700)  # mkdir ignores mode when the dir exists
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
         conf_path.write_text(conf)
+        os.chmod(conf_path, 0o600)  # contains the client private key
 
         # Bind the relay BEFORE launching the client. OpenVPN Connect starts
         # sending to 127.0.0.1:1194 immediately; if nothing is listening yet it
@@ -414,22 +419,21 @@ def run_openvpn_with_callbacks(
     except Exception as e:
         log_msg(f"[red]Error: {e}[/]")
     finally:
-        # Cleanup sockets
+        # Cleanup sockets (may be None if we failed before creating them)
+        for sock in (udp, ovpn_sock):
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        # Close the CloudShell session properly — killing the local plugin
+        # alone leaves an orphan session burning the 200h/region quota.
         try:
-            udp.close()
+            shell.cleanup()
         except Exception:
             pass
-        try:
-            ovpn_sock.close()
-        except Exception:
-            pass
-        
-        # Kill CloudShell session
-        try:
-            shell._proc.kill()
-        except Exception:
-            pass
-        
+
         # Cleanup OpenVPN Connect
         ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
         if ovpn_connect_bin.exists():
@@ -480,6 +484,8 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
     wait_for_running(cs, env_id)
 
     shell = Shell(cs, env_id, region)
+    udp = None
+    ovpn_sock = None
     try:
         log.info("Uploading OpenVPN agent to CloudShell...")
         upload_agent(shell)
@@ -583,8 +589,10 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
         conf = generate_ovpn_conf(pki, OVPN_PORT, exclude_ips, dns_servers)
         from .common import DATA_DIR
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(DATA_DIR, 0o700)  # mkdir ignores mode when the dir exists
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
         conf_path.write_text(conf)
+        os.chmod(conf_path, 0o600)  # contains the client private key
         log.info(f"OpenVPN config written to: {conf_path}")
 
         # Bind the relay BEFORE launching the client. OpenVPN Connect starts
@@ -649,12 +657,21 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
         log.error(f"Connection lost: {e}")
         log.error("Re-run the command to reconnect.")
     finally:
-        # Kill the session-manager-plugin process
+        # Free port 1194 so an immediate re-run can bind it again
+        for sock in (udp, ovpn_sock):
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        # Close the CloudShell session properly — killing the local plugin
+        # alone leaves an orphan session burning the 200h/region quota.
         try:
-            shell._proc.kill()
+            shell.cleanup()
         except Exception:
             pass
-        
+
         # Disconnect and cleanup OpenVPN Connect
         ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
         if ovpn_connect_bin.exists():

@@ -57,6 +57,7 @@ def setup_openvpn(
     # Write PKI files
     print("SETUP: Writing PKI files...", flush=True)
     os.makedirs("/tmp/ovpn", exist_ok=True)
+    os.chmod("/tmp/ovpn", 0o700)  # makedirs ignores mode when the dir exists
 
     with open("/tmp/ovpn/ca.crt", "w") as f:
         f.write(ca_cert)
@@ -279,8 +280,9 @@ def udp_relay(ext_sock: socket.socket, laptop_addr: tuple[str, int]) -> None:
 
 def main() -> None:
     if len(sys.argv) != 6:
-        print(f"Usage: {sys.argv[0]} <udp_port> <laptop_ip:port> <ca_cert_b64> <server_cert_b64> <server_key_b64> <ta_key_b64>",
+        print(f"Usage: {sys.argv[0]} <udp_port> <laptop_ip:port> <ca_cert_b64> <server_cert_b64> <server_key_b64>",
               file=sys.stderr)
+        print("       ta_key is passed via the TA_KEY_B64 environment variable", file=sys.stderr)
         print(f"Got {len(sys.argv)} args: {sys.argv}", file=sys.stderr)
         sys.exit(1)
 
