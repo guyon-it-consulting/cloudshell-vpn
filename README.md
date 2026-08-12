@@ -48,6 +48,9 @@ AWS_PROFILE=my-profile python -m cloudshell_vpn
 
 # Disable TUI, use simple log output
 python -m cloudshell_vpn --no-tui
+
+# Use different DNS servers (default: Cloudflare 1.1.1.1, 1.0.0.1)
+python -m cloudshell_vpn --dns 9.9.9.9,149.112.112.112
 ```
 
 The tool will:
@@ -96,6 +99,42 @@ Alternatively, attach the AWS managed policy `AWSCloudShellFullAccess` and add `
 
 Route exclusions are handled in the `.ovpn` config via `net_gateway` directives.
 OpenVPN Connect manages routing automatically with its built-in privileges.
+
+### What this means for leak protection
+
+There is **no kill switch**. Dead-tunnel detection comes from the server's
+`keepalive 10 30`, pushed to the client as `ping 10` / `ping-restart 30`, so a
+stalled tunnel is torn down and retried rather than silently passing no traffic.
+That closes the common failure case, but a firewall-level kill switch would
+require `sudo pfctl`, which this tool deliberately avoids.
+
+Note that OpenVPN Connect rejects `ping`, `ping-restart`, `persist-tun` and
+similar directives when they appear in the `.ovpn` itself ("unsupported
+options") — it manages timers and interface persistence internally. This is why
+the timers are pushed by the server rather than set in the profile.
+
+Concretely: if the relay process is killed abruptly (`kill -9`, kernel panic,
+forced logout), traffic falls back to your normal gateway in the clear, with no
+warning. If you need a guarantee rather than a best effort, use a client with a
+built-in firewall kill switch.
+
+## Privacy scope
+
+The exit IP belongs to an AWS pool and is not registered to you — sites you
+visit see "an AWS IP in region X" and cannot trace it back to you.
+
+AWS itself is a different matter. CloudTrail records the `cloudshell:*` API
+calls made with your credentials, including your real source IP and timestamps;
+the environment is tied to your IAM principal; and outbound transfer appears on
+your bill. AWS therefore holds the link between your identity and this session
+by construction.
+
+That is fine for geo-shifting or for shielding traffic on an untrusted network.
+It is not equivalent to a no-logs VPN: you have replaced your ISP as the
+observer with Amazon, not removed the observer.
+
+DNS goes to Cloudflare by default (shorter retention than Google's resolvers).
+Use `--dns` to point at a resolver you prefer.
 
 ## Cost
 
