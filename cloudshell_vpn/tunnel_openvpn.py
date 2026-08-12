@@ -39,15 +39,20 @@ def start_heartbeat(cs_client, env_id: str) -> None:
     threading.Thread(target=loop, daemon=True, name="heartbeat").start()
 
 
-def udp_relay(ext_sock: socket.socket) -> None:
+def udp_relay(ext_sock: socket.socket, ovpn_sock: socket.socket | None = None) -> None:
     """Relay OpenVPN UDP between local client and remote agent.
 
     ext_sock must already be connect()-ed to the agent's address.
     Uses send()/recv() — no address needed since socket is connected.
+
+    Pass ovpn_sock to reuse a socket bound before the client was launched:
+    OpenVPN Connect starts sending immediately and gives up on ICMP
+    port-unreachable if nothing is listening on 127.0.0.1:1194 yet.
     """
-    ovpn_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ovpn_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    ovpn_sock.bind(("127.0.0.1", LOCAL_OVPN_PORT))
+    if ovpn_sock is None:
+        ovpn_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ovpn_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ovpn_sock.bind(("127.0.0.1", LOCAL_OVPN_PORT))
     ovpn_sock.setblocking(False)
     ext_sock.setblocking(False)
 

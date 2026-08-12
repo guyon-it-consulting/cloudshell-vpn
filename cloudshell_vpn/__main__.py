@@ -293,6 +293,13 @@ def run_openvpn_with_callbacks(
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
         conf_path.write_text(conf)
 
+        # Bind the relay BEFORE launching the client. OpenVPN Connect starts
+        # sending to 127.0.0.1:1194 immediately; if nothing is listening yet it
+        # gets ICMP port-unreachable and gives up before we ever bind.
+        ovpn_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ovpn_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ovpn_sock.bind(("127.0.0.1", OVPN_PORT))
+
         # Auto-import into OpenVPN Connect
         ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
         if ovpn_connect_bin.exists():
@@ -320,10 +327,8 @@ def run_openvpn_with_callbacks(
         log_msg("[green]VPN Connected![/]")
 
         # UDP relay loop with stats - use select() for efficiency
+        # (ovpn_sock was bound above, before the client was launched)
         import select
-        
-        ovpn_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ovpn_sock.bind(("127.0.0.1", OVPN_PORT))
 
         bytes_in = 0
         bytes_out = 0
@@ -545,7 +550,10 @@ def run_openvpn(region: str) -> None:
             except (BlockingIOError, OSError):
                 break
 
-        actual_addr = hole_punch(udp, remote_addr)
+        # hole_punch returns (addr, punch_received) — unpack both
+        actual_addr, punch_received = hole_punch(udp, remote_addr)
+        if not punch_received:
+            log.warning("NAT punch may have failed — continuing anyway")
 
         # Connect the socket (for send/recv API)
         udp.connect(actual_addr)
@@ -565,6 +573,13 @@ def run_openvpn(region: str) -> None:
         conf_path = DATA_DIR / "cloudshell-vpn.ovpn"
         conf_path.write_text(conf)
         log.info(f"OpenVPN config written to: {conf_path}")
+
+        # Bind the relay BEFORE launching the client. OpenVPN Connect starts
+        # sending to 127.0.0.1:1194 immediately; if nothing is listening yet it
+        # gets ICMP port-unreachable and gives up before we ever bind.
+        ovpn_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ovpn_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ovpn_sock.bind(("127.0.0.1", OVPN_PORT))
 
         # Try to auto-import into OpenVPN Connect (if installed)
         ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
@@ -611,7 +626,7 @@ def run_openvpn(region: str) -> None:
             subprocess.Popen(["open", str(conf_path)])
 
         # Run UDP relay (blocks) — socket is already connected
-        udp_relay(udp)
+        udp_relay(udp, ovpn_sock)
 
     except KeyboardInterrupt:
         log.info("\nShutting down...")
