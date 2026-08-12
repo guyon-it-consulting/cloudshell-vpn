@@ -328,12 +328,14 @@ def run_openvpn_with_callbacks(
         bytes_in = 0
         bytes_out = 0
         ovpn_client = None
+        relay_started = time.time()
         last_stats = time.time()
         last_remote_data = time.time()
         last_ping = time.time()
         ping_sent_time = None
         latency_ms = 0
         DISCONNECT_TIMEOUT = 120
+        CLIENT_CONNECT_TIMEOUT = 60  # OpenVPN Connect never reached the relay
         PING_INTERVAL = 10  # Ping every 10 seconds
 
         while not stop_event.is_set():
@@ -374,10 +376,24 @@ def run_openvpn_with_callbacks(
                 status_callback(connected=True, bytes_in=bytes_in, bytes_out=bytes_out, latency_ms=latency_ms)
                 last_stats = now
             
-            if ovpn_client and (now - last_remote_data) > DISCONNECT_TIMEOUT:
+            # Dead-tunnel detection. Waiting for OpenVPN Connect to reach the
+            # local relay is a different failure from losing the agent — the
+            # old single condition never fired in the first case.
+            if ovpn_client is None:
+                if (now - relay_started) > CLIENT_CONNECT_TIMEOUT:
+                    log_msg("[yellow]OpenVPN Connect never reached the relay, retrying...[/]")
+                    raise ConnectionError(
+                        f"OpenVPN Connect never connected to the local relay "
+                        f"(waited {CLIENT_CONNECT_TIMEOUT}s on 127.0.0.1:{OVPN_PORT})"
+                    )
+            elif (now - last_remote_data) > DISCONNECT_TIMEOUT:
                 log_msg("[yellow]Connection appears dead, reconnecting...[/]")
                 raise ConnectionError("No data from CloudShell for 2 minutes")
 
+    except ConnectionError:
+        # Let the TUI retry loop handle it — the bare 'except Exception' below
+        # used to swallow this, making the retry mechanism unreachable.
+        raise
     except Exception as e:
         log_msg(f"[red]Error: {e}[/]")
     finally:
@@ -599,6 +615,11 @@ def run_openvpn(region: str) -> None:
 
     except KeyboardInterrupt:
         log.info("\nShutting down...")
+    except ConnectionError as e:
+        # No retry loop in --no-tui mode; exit with a clear reason instead of
+        # spinning on a tunnel that no longer carries traffic.
+        log.error(f"Connection lost: {e}")
+        log.error("Re-run the command to reconnect.")
     finally:
         # Kill the session-manager-plugin process
         try:

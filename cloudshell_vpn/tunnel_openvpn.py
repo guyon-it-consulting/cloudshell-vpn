@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 _PUNCH_INTERVAL_S = 0.05
 LOCAL_OVPN_PORT = OVPN_PORT
+DISCONNECT_TIMEOUT_S = 120  # No data from the agent for this long => dead tunnel
+CLIENT_CONNECT_TIMEOUT_S = 60  # OpenVPN Connect never reached the local relay
 
 
 def start_heartbeat(cs_client, env_id: str) -> None:
@@ -55,6 +57,8 @@ def udp_relay(ext_sock: socket.socket) -> None:
     client_addr: tuple[str, int] | None = None
     last_send = time.time() - 10  # Force immediate keepalive
     last_stats_log = time.time()
+    started = time.time()
+    last_remote_data = time.time()
     ovpn_packets = 0
     remote_packets = 0
 
@@ -83,6 +87,8 @@ def udp_relay(ext_sock: socket.socket) -> None:
                 # From remote agent → send to OpenVPN client
                 try:
                     data = ext_sock.recv(MAX_UDP_PAYLOAD)
+                    # Keepalives still prove the tunnel is alive
+                    last_remote_data = time.time()
                     if data == b"PUNCH":
                         continue  # Keepalive from agent
                     if data == b"\x00":
@@ -93,8 +99,23 @@ def udp_relay(ext_sock: socket.socket) -> None:
                 except (BlockingIOError, OSError):
                     pass
 
+        now = time.time()
+
+        # Dead-tunnel detection. Split in two: waiting for OpenVPN Connect to
+        # reach the local relay is a different failure from losing the agent.
+        if client_addr is None:
+            if now - started > CLIENT_CONNECT_TIMEOUT_S:
+                raise ConnectionError(
+                    f"OpenVPN Connect never connected to the local relay "
+                    f"(waited {CLIENT_CONNECT_TIMEOUT_S}s on 127.0.0.1:{LOCAL_OVPN_PORT})"
+                )
+        elif now - last_remote_data > DISCONNECT_TIMEOUT_S:
+            raise ConnectionError(
+                f"No data from CloudShell for {DISCONNECT_TIMEOUT_S}s — tunnel is dead"
+            )
+
         # NAT keepalive every 5s to maintain mapping
-        if time.time() - last_send > 5:
+        if now - last_send > 5:
             try:
                 ext_sock.send(b"\x00")
                 last_send = time.time()

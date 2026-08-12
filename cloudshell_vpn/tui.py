@@ -422,15 +422,17 @@ class CloudShellVPN(App):
                 except ConnectionError as e:
                     # Auto-reconnect on connection lost
                     retry_count += 1
+                    # _log_message already wraps call_from_thread — wrapping it
+                    # again raises "must run in a different thread from the app".
                     if retry_count < max_retries and not self._stop_vpn.is_set():
-                        self.call_from_thread(self._log_message, f"[yellow]Reconnecting ({retry_count}/{max_retries})...[/]")
+                        self._log_message(f"[yellow]Reconnecting ({retry_count}/{max_retries})...[/]")
                         self.call_from_thread(self._set_reconnecting)
                         time.sleep(2)  # Brief pause before retry
                     else:
-                        self.call_from_thread(self._log_message, f"[red]Connection lost after {max_retries} retries[/]")
+                        self._log_message(f"[red]Connection lost after {max_retries} retries[/]")
                         self.call_from_thread(self._set_error, str(e))
                 except Exception as e:
-                    self.call_from_thread(self._log_message, f"[red]Error: {e}[/]")
+                    self._log_message(f"[red]Error: {e}[/]")
                     self.call_from_thread(self._set_error, str(e))
                     break
             
