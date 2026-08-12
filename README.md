@@ -171,3 +171,7 @@ All runtime data is stored in `~/.cloudshell-vpn/`:
 ├── cloudshell-vpn.ovpn   # OpenVPN profile (auto-imported into OpenVPN Connect)
 └── history.json           # Recently used regions
 ```
+
+## Contributors
+
+- [Brice Dauzats](https://github.com/bdauzats) — reliability and security hardening (v0.1.0): STUN validation, shell-injection fix, file permissions, DNS privacy, reconnection logic, relay binding, dead-tunnel detection, and the `run.sh` launcher.
