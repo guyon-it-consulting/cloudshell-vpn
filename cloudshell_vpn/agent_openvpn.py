@@ -105,8 +105,10 @@ rcvbuf 524288
 push "sndbuf 524288"
 push "rcvbuf 524288"
 
-# Keepalive
-keepalive 10 60
+# Keepalive. This expands to push "ping 10" + push "ping-restart 30", which is
+# how the client gets dead-tunnel detection: OpenVPN Connect rejects those
+# directives when set locally in the .ovpn, but honours them when pushed.
+keepalive 10 30
 
 # Security — drop privileges after init
 # Note: we don't use 'user nobody' because it breaks routing restoration on macOS clients

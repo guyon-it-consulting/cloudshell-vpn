@@ -121,10 +121,12 @@ client
 dev tun
 proto udp
 remote 127.0.0.1 {local_port}
-resolv-retry infinite
 nobind
-persist-key
-persist-tun
+
+# Note: resolv-retry / persist-key / persist-tun / mute / keepalive / ping* are
+# deliberately absent. OpenVPN Connect reports them as "unsupported options" —
+# it manages timers and interface persistence internally, and the server pushes
+# the keepalive timers anyway.
 
 # Crypto
 cipher AES-256-GCM
@@ -147,12 +149,12 @@ redirect-gateway def1
 sndbuf 524288
 rcvbuf 524288
 
-# Keepalive
-keepalive 10 60
+# Keepalive and dead-tunnel detection come from the server: its
+# 'keepalive 10 30' expands to push "ping 10" + push "ping-restart 30".
+# Setting them locally makes OpenVPN Connect flag them as unsupported.
 
-# Verbosity
+# Verbosity ('mute' omitted — unsupported by OpenVPN Connect)
 verb 3
-mute 10
 
 # Inline certificates and keys (ephemeral, valid 1 day)
 <ca>
