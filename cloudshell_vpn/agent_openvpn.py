@@ -32,6 +32,7 @@ PUNCH_INTERVAL_S = 0.05
 OVPN_PORT = 1194
 OVPN_SUBNET = "10.98.0"
 OVPN_SERVER_IP = f"{OVPN_SUBNET}.1"
+MAX_UDP_PAYLOAD = 65535  # Max UDP datagram — smaller reads truncate silently
 
 
 def _run(cmd: str, check: bool = False) -> int:
@@ -223,7 +224,7 @@ def udp_relay(ext_sock: socket.socket, laptop_addr: tuple[str, int]) -> None:
         for sock in readable:
             if sock is ext_sock:
                 try:
-                    data, addr = ext_sock.recvfrom(4096)
+                    data, addr = ext_sock.recvfrom(MAX_UDP_PAYLOAD)
                     packet_count += 1
                     
                     if data == b"PUNCH":
@@ -249,7 +250,7 @@ def udp_relay(ext_sock: socket.socket, laptop_addr: tuple[str, int]) -> None:
                     
             elif sock is ovpn_sock:
                 try:
-                    data, ovpn_addr = ovpn_sock.recvfrom(4096)
+                    data, ovpn_addr = ovpn_sock.recvfrom(MAX_UDP_PAYLOAD)
                     ext_sock.sendto(data, actual_laptop)
                     last_send = time.time()
                 except BlockingIOError:

@@ -16,7 +16,7 @@ import socket
 import threading
 import time
 
-from .common import HEARTBEAT_INTERVAL_S, OVPN_PORT
+from .common import HEARTBEAT_INTERVAL_S, MAX_UDP_PAYLOAD, OVPN_PORT
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def udp_relay(ext_sock: socket.socket) -> None:
             if sock is ovpn_sock:
                 # From OpenVPN client → send to remote agent
                 try:
-                    data, addr = ovpn_sock.recvfrom(4096)
+                    data, addr = ovpn_sock.recvfrom(MAX_UDP_PAYLOAD)
                     if data:
                         client_addr = addr
                         ext_sock.send(data)
@@ -82,7 +82,7 @@ def udp_relay(ext_sock: socket.socket) -> None:
             elif sock is ext_sock:
                 # From remote agent → send to OpenVPN client
                 try:
-                    data = ext_sock.recv(4096)
+                    data = ext_sock.recv(MAX_UDP_PAYLOAD)
                     if data == b"PUNCH":
                         continue  # Keepalive from agent
                     if data == b"\x00":

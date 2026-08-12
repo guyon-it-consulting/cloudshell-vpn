@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 AGENT_UDP_PORT = 4433
 OVPN_PORT = 1194  # OpenVPN listen port on CloudShell side
+MAX_UDP_PAYLOAD = 65535  # Max UDP datagram — smaller reads truncate silently
 OVPN_SUBNET = "10.98.0"
 OVPN_SERVER_IP = f"{OVPN_SUBNET}.1"
 OVPN_CLIENT_IP = f"{OVPN_SUBNET}.2"
