@@ -13,6 +13,7 @@ import io
 import logging
 import os
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -91,19 +92,19 @@ def generate_ovpn_conf(
     exclude_ips: list[str],
 ) -> str:
     """Generate OpenVPN .ovpn config with inline certs and net_gateway routes.
-    
+
     The key feature: routes for exclude_ips use 'net_gateway' which tells
     OpenVPN to route them via the original gateway BEFORE the VPN was connected.
     This is managed entirely by OpenVPN Connect — no external sudo required!
     """
     from .common import OVPN_PORT
-    
+
     # Build route exclusions using net_gateway
     route_lines = []
     for ip in exclude_ips:
         route_lines.append(f"route {ip} 255.255.255.255 net_gateway")
     routes = "\n".join(route_lines)
-    
+
     return f"""# CloudShell VPN - OpenVPN Config
 # Auto-imported into OpenVPN Connect
 
@@ -178,13 +179,15 @@ def run_openvpn_with_callbacks(
         generate_openvpn_pki,
         get_or_create_env,
         stun_discover,
+        validate_public_ipv4,
+        validate_port,
         wait_for_running,
     )
     from .tunnel_openvpn import hole_punch, start_heartbeat
 
     def log_msg(msg: str):
         log_callback(msg)
-    
+
     if not shutil.which("session-manager-plugin"):
         log_msg("[red]ERROR: session-manager-plugin not found[/]")
         return
@@ -195,7 +198,7 @@ def run_openvpn_with_callbacks(
     log_msg(f"Region: {region}")
     cs = create_cs_client(region)
     env_id = get_or_create_env(cs)
-    
+
     log_msg("Waiting for CloudShell environment...")
     wait_for_running(cs, env_id)
 
@@ -235,10 +238,14 @@ def run_openvpn_with_callbacks(
         ta_key_b64 = base64.b64encode(pki["ta_key"].encode()).decode()
 
         log_msg("Starting OpenVPN agent...")
+        # local_ip/local_port are STUN-derived and already validated, but this
+        # command runs under sudo — quote every interpolated value regardless.
         shell.send(
-            f"export TA_KEY_B64='{ta_key_b64}' && "
-            f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} {local_ip}:{local_port} "
-            f"'{ca_b64}' '{server_cert_b64}' '{server_key_b64}' 2>&1"
+            f"export TA_KEY_B64={shlex.quote(ta_key_b64)} && "
+            f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} "
+            f"{shlex.quote(f'{local_ip}:{local_port}')} "
+            f"{shlex.quote(ca_b64)} {shlex.quote(server_cert_b64)} "
+            f"{shlex.quote(server_key_b64)} 2>&1"
         )
 
         log_msg("Waiting for agent (timeout: 120s)...")
@@ -253,8 +260,12 @@ def run_openvpn_with_callbacks(
             raise AgentError("Cannot parse agent endpoint")
 
         agent_ip, agent_port_str = match.group(1).rsplit(":", 1)
-        remote_addr = (agent_ip, int(agent_port_str))
-        log_msg(f"Agent public: {agent_ip}:{agent_port_str}")
+        # This value reaches the .ovpn file as a 'route' directive, read by a
+        # privileged binary — validate before trusting the agent's stdout.
+        agent_ip = validate_public_ipv4(agent_ip, "Agent")
+        agent_port = validate_port(int(agent_port_str), "Agent")
+        remote_addr = (agent_ip, agent_port)
+        log_msg(f"Agent public: {agent_ip}:{agent_port}")
 
         stop_keepalive.set()
         time.sleep(0.5)
@@ -401,7 +412,7 @@ def run_openvpn_with_callbacks(
 
 def run_openvpn(region: str) -> None:
     """Run VPN using OpenVPN.
-    
+
     Route exclusions are handled in the .ovpn config via
     'route <ip> ... net_gateway', so no sudo for route management is needed.
     OpenVPN Connect handles everything.
@@ -415,6 +426,8 @@ def run_openvpn(region: str) -> None:
         generate_openvpn_pki,
         get_or_create_env,
         stun_discover,
+        validate_public_ipv4,
+        validate_port,
         wait_for_running,
     )
     from .tunnel_openvpn import hole_punch, udp_relay, start_heartbeat
@@ -473,11 +486,15 @@ def run_openvpn(region: str) -> None:
         ta_key_b64 = base64.b64encode(pki["ta_key"].encode()).decode()
 
         log.info("Starting OpenVPN agent...")
-        # TA key is too long for args, pass via environment variable
+        # TA key is too long for args, pass via environment variable.
+        # local_ip/local_port are STUN-derived and already validated, but this
+        # command runs under sudo — quote every interpolated value regardless.
         shell.send(
-            f"export TA_KEY_B64='{ta_key_b64}' && "
-            f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} {local_ip}:{local_port} "
-            f"'{ca_b64}' '{server_cert_b64}' '{server_key_b64}' 2>&1"
+            f"export TA_KEY_B64={shlex.quote(ta_key_b64)} && "
+            f"sudo -E python3 /tmp/vpn_agent_openvpn.py {AGENT_UDP_PORT} "
+            f"{shlex.quote(f'{local_ip}:{local_port}')} "
+            f"{shlex.quote(ca_b64)} {shlex.quote(server_cert_b64)} "
+            f"{shlex.quote(server_key_b64)} 2>&1"
         )
 
         found, output = shell.wait_for("AGENT_READY:", timeout=120)
@@ -493,8 +510,12 @@ def run_openvpn(region: str) -> None:
             raise AgentError(f"Cannot parse agent endpoint:\n{output}")
 
         agent_ip, agent_port_str = match.group(1).rsplit(":", 1)
-        remote_addr = (agent_ip, int(agent_port_str))
-        log.info(f"Agent public: {agent_ip}:{agent_port_str}")
+        # This value reaches the .ovpn file as a 'route' directive, read by a
+        # privileged binary — validate before trusting the agent's stdout.
+        agent_ip = validate_public_ipv4(agent_ip, "Agent")
+        agent_port = validate_port(int(agent_port_str), "Agent")
+        remote_addr = (agent_ip, agent_port)
+        log.info(f"Agent public: {agent_ip}:{agent_port}")
 
         # Stop keepalive, start punching
         stop_keepalive.set()

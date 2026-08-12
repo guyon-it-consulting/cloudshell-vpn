@@ -14,6 +14,7 @@ Protocol markers printed to stdout:
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import select
 import socket
@@ -48,7 +49,7 @@ def setup_openvpn(ca_cert: str, server_cert: str, server_key: str, ta_key: str) 
     # Write PKI files
     print("SETUP: Writing PKI files...", flush=True)
     os.makedirs("/tmp/ovpn", exist_ok=True)
-    
+
     with open("/tmp/ovpn/ca.crt", "w") as f:
         f.write(ca_cert)
     with open("/tmp/ovpn/server.crt", "w") as f:
@@ -144,6 +145,26 @@ status /tmp/ovpn/status.log 30
     print("SETUP: OpenVPN server ready", flush=True)
 
 
+def _validate_endpoint(ip: str, port: int) -> tuple[str, int]:
+    """Reject non-routable addresses and out-of-range ports.
+
+    STUN is unauthenticated UDP; the laptop side interpolates what we print
+    here into its .ovpn config, so validate before printing AGENT_READY.
+    """
+    try:
+        parsed = ipaddress.IPv4Address(ip)
+    except ValueError as exc:
+        raise RuntimeError(f"STUN returned an invalid IPv4 address: {ip!r}") from exc
+    # is_global covers RFC1918, loopback, link-local, CGNAT (100.64/10) and
+    # the documentation ranges in one check. Multicast needs its own test:
+    # 224.0.0.0/4 is globally routable, so is_global accepts it.
+    if not parsed.is_global or parsed.is_multicast:
+        raise RuntimeError(f"STUN returned a non-routable address: {ip}")
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"STUN returned an invalid port: {port}")
+    return str(parsed), port
+
+
 def stun_discover(sock: socket.socket) -> tuple[str, int]:
     txn = os.urandom(12)
     sock.settimeout(STUN_TIMEOUT_S)
@@ -156,7 +177,7 @@ def stun_discover(sock: socket.socket) -> tuple[str, int]:
             port = struct.unpack("!H", data[i + 6 : i + 8])[0] ^ 0x2112
             raw_ip = struct.unpack("!I", data[i + 8 : i + 12])[0] ^ 0x2112A442
             ip = f"{(raw_ip >> 24) & 0xFF}.{(raw_ip >> 16) & 0xFF}.{(raw_ip >> 8) & 0xFF}.{raw_ip & 0xFF}"
-            return ip, port
+            return _validate_endpoint(ip, port)
         i += 4 + alen
     raise RuntimeError("STUN: no XOR-MAPPED-ADDRESS")
 

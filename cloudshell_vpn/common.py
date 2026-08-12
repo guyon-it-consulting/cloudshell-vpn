@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import ipaddress
 import json
 import logging
 import os
@@ -266,6 +267,31 @@ def wait_for_running(client: Any, env_id: str, timeout: int = 300) -> None:
     log.info("Environment RUNNING")
 
 
+def validate_public_ipv4(ip: str, source: str) -> str:
+    """Reject anything that is not a routable public IPv4 address.
+
+    STUN responses are unauthenticated UDP, and the values we extract from
+    them end up interpolated into a sudo command line and into the .ovpn
+    file read by a privileged binary. Validate before either happens.
+    """
+    try:
+        parsed = ipaddress.IPv4Address(ip)
+    except ValueError as exc:
+        raise StunError(f"{source} returned an invalid IPv4 address: {ip!r}") from exc
+    # is_global covers RFC1918, loopback, link-local, CGNAT (100.64/10) and
+    # the documentation ranges in one check. Multicast needs its own test:
+    # 224.0.0.0/4 is globally routable, so is_global accepts it.
+    if not parsed.is_global or parsed.is_multicast:
+        raise StunError(f"{source} returned a non-routable address: {ip}")
+    return str(parsed)
+
+
+def validate_port(port: int, source: str) -> int:
+    if not 1 <= port <= 65535:
+        raise StunError(f"{source} returned an invalid port: {port}")
+    return port
+
+
 def stun_discover(sock: socket.socket) -> tuple[str, int]:
     """Discover public IP:port via STUN Binding Request."""
     txn = os.urandom(12)
@@ -282,7 +308,7 @@ def stun_discover(sock: socket.socket) -> tuple[str, int]:
             port = struct.unpack("!H", data[i + 6 : i + 8])[0] ^ 0x2112
             raw_ip = struct.unpack("!I", data[i + 8 : i + 12])[0] ^ 0x2112A442
             ip = f"{(raw_ip >> 24) & 0xFF}.{(raw_ip >> 16) & 0xFF}.{(raw_ip >> 8) & 0xFF}.{raw_ip & 0xFF}"
-            return ip, port
+            return validate_public_ipv4(ip, "STUN"), validate_port(port, "STUN")
         i += 4 + alen
     raise StunError("No XOR-MAPPED-ADDRESS in STUN response")
 
