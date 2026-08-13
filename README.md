@@ -14,7 +14,7 @@ macOS OpenVPN Connect (tun, full tunnel)
   Internet (exits from AWS region IP)
 ```
 
-1. The tool creates a non-VPC CloudShell environment in your chosen region
+1. Creates a non-VPC CloudShell environment in your chosen region
 2. Generates ephemeral PKI (CA, server cert, client cert)
 3. Inside CloudShell: sets up OpenVPN server + NAT masquerade
 4. Both sides discover their public endpoints via STUN, then UDP hole-punch
@@ -22,45 +22,62 @@ macOS OpenVPN Connect (tun, full tunnel)
 
 ## Prerequisites
 
+- macOS with [OpenVPN Connect](https://openvpn.net/client/) installed (free)
 - Python 3.10+
 - `session-manager-plugin` ([install](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html))
-- AWS CLI configured (set `AWS_PROFILE` env var, or use default profile)
-- `cryptography`, `boto3` (`pip install -r requirements.txt`)
-- [OpenVPN Connect](https://openvpn.net/client/) (free)
+- AWS credentials configured (`AWS_PROFILE` env var, or default profile)
 - Non-symmetric NAT (most home networks work)
 
 ## Quick start
 
+The easiest way to run is with the launcher script — it checks prerequisites, manages a virtualenv, and starts the VPN:
+
 ```bash
-# Install deps
-pip install -r requirements.txt
-
-# Run (interactive region picker + TUI)
-python -m cloudshell_vpn
-
-# Or specify region directly (no TUI)
-python -m cloudshell_vpn --region eu-west-1
-
-# Use a specific AWS profile
-python -m cloudshell_vpn --profile my-profile
-# Or via env var
-AWS_PROFILE=my-profile python -m cloudshell_vpn
-
-# Disable TUI, use simple log output
-python -m cloudshell_vpn --no-tui
-
-# Use different DNS servers (default: Cloudflare 1.1.1.1, 1.0.0.1)
-python -m cloudshell_vpn --dns 9.9.9.9,149.112.112.112
+./run.sh
 ```
 
-The tool will:
-1. Ask you to pick a region (or use `--region`)
-2. Generate ephemeral PKI
-3. Start CloudShell and set up the OpenVPN server
-4. Establish the UDP tunnel via NAT hole punching
-5. Auto-import the profile into OpenVPN Connect and activate
+That's it. The script will:
+1. Verify Python ≥ 3.10, `session-manager-plugin`, and OpenVPN Connect are installed
+2. Create/update a virtualenv with dependencies
+3. Verify AWS credentials
+4. Launch the VPN (interactive region picker + TUI)
 
-All traffic now exits from the AWS region. Press Ctrl+C in the terminal to stop.
+Pass any flag through to the tool:
+
+```bash
+./run.sh --region eu-west-1
+./run.sh --profile my-profile
+./run.sh --no-tui
+./run.sh --dns 9.9.9.9,149.112.112.112
+```
+
+### Manual setup
+
+If you prefer to manage the environment yourself:
+
+```bash
+pip install -r requirements.txt
+python -m cloudshell_vpn
+```
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--region`, `-r` | AWS region (skips interactive picker) |
+| `--profile`, `-p` | AWS profile name (uses default credential chain if omitted) |
+| `--no-tui` | Disable TUI, use simple log output |
+| `--dns` | Comma-separated DNS servers (default: `1.1.1.1,1.0.0.1`) |
+
+### What happens
+
+1. Pick a region (or use `--region`)
+2. Ephemeral PKI is generated
+3. CloudShell starts, agent is uploaded, OpenVPN server comes up
+4. NAT hole punch establishes the UDP path
+5. Profile is auto-imported into OpenVPN Connect
+
+All traffic now exits from the AWS region. Press Ctrl+C to stop.
 
 ## IAM permissions
 
