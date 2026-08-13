@@ -2,6 +2,8 @@
 
 Free VPN using AWS CloudShell + NAT hole punching. Routes all traffic through any AWS region — at zero cost.
 
+Read the story behind it: [How I built a free VPN over AWS CloudShell](https://builder.aws.com/content/3HmFxIRJFHC3cAaqUxByvcY8hDI/how-i-build-a-free-vpn-over-aws-cloudshell).
+
 ## How it works
 
 ```
