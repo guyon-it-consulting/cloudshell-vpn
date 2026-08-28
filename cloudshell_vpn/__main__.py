@@ -137,6 +137,10 @@ remote-cert-tls server
 # Route ALL traffic through VPN (full tunnel)
 redirect-gateway def1
 
+# Block IPv6 to prevent leaks (VPN only supports IPv4)
+# This tells OpenVPN Connect to reject all IPv6 traffic while connected
+block-ipv6
+
 # CRITICAL: These routes bypass the VPN for relay/AWS traffic.
 # net_gateway = the gateway that existed BEFORE VPN connected.
 # OpenVPN handles this automatically — no sudo required!
