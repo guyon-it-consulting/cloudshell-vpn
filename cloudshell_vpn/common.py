@@ -16,9 +16,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import boto3
-import botocore.session
-
 log = logging.getLogger(__name__)
 
 AGENT_UDP_PORT = 4433
@@ -173,6 +170,7 @@ def generate_openvpn_pki() -> dict[str, str]:
 
 def validate_credentials() -> None:
     """Validate AWS credentials early. Raises VpnError with actionable message."""
+    import boto3
     from botocore.exceptions import (
         ClientError,
         NoCredentialsError,
@@ -231,6 +229,9 @@ def validate_credentials() -> None:
 
 def create_cs_client(region: str) -> Any:
     """Create a boto3 CloudShell client with custom service model."""
+    import boto3
+    import botocore.session
+
     bc = botocore.session.get_session()
     bc.get_component("data_loader").search_paths.insert(0, _MODEL_DIR)
     session = boto3.Session(botocore_session=bc, profile_name=AWS_PROFILE)
@@ -239,6 +240,8 @@ def create_cs_client(region: str) -> Any:
 
 def create_ec2_client(region: str) -> Any:
     """Create a boto3 EC2 client for region listing."""
+    import boto3
+
     return boto3.Session(profile_name=AWS_PROFILE).client("ec2", region_name=region)
 
 
