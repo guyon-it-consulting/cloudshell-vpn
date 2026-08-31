@@ -37,9 +37,30 @@ die() {
     exit 1
 }
 
+# ------------------------------------------------------------------ provider
+
+# The provider decides which CLI and which credentials we check for, so it has
+# to be resolved before the pre-flight checks — not just passed through.
+PROVIDER="aws"
+prev=""
+for arg in "$@"; do
+    case "$prev" in
+        --provider) PROVIDER="$arg" ;;
+    esac
+    case "$arg" in
+        --provider=*) PROVIDER="${arg#--provider=}" ;;
+    esac
+    prev="$arg"
+done
+
+case "$PROVIDER" in
+    aws|gcp) ;;
+    *) die "Unknown --provider '$PROVIDER' (expected 'aws' or 'gcp')." ;;
+esac
+
 # ---------------------------------------------------------------- prerequisites
 
-step "Checking prerequisites"
+step "Checking prerequisites (provider: $PROVIDER)"
 
 # Find a Python >= 3.10. python3 is usually it, but a system python3 can be
 # older than the venv-capable one installed by Homebrew, so try the explicit
@@ -63,19 +84,37 @@ if [ -z "$PYTHON" ]; then
 fi
 ok "Python $("$PYTHON" -c 'import platform; print(platform.python_version())') ($PYTHON)"
 
-# session-manager-plugin is what lets the AWS CLI/boto3 open a CloudShell
-# session. Without it the tool cannot connect at all.
-if ! command -v session-manager-plugin >/dev/null 2>&1; then
-    die "session-manager-plugin is not installed." \
-        "" \
-        "It is required to open a session inside CloudShell." \
-        "" \
-        "Install it with Homebrew:" \
-        "    brew install --cask session-manager-plugin" \
-        "" \
-        "Other platforms: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+if [ "$PROVIDER" = "aws" ]; then
+    # session-manager-plugin is what lets the AWS CLI/boto3 open a CloudShell
+    # session. Without it the tool cannot connect at all.
+    if ! command -v session-manager-plugin >/dev/null 2>&1; then
+        die "session-manager-plugin is not installed." \
+            "" \
+            "It is required to open a session inside CloudShell." \
+            "" \
+            "Install it with Homebrew:" \
+            "    brew install --cask session-manager-plugin" \
+            "" \
+            "Other platforms: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+    fi
+    ok "session-manager-plugin"
+else
+    # GCP talks to Cloud Shell over plain SSH; gcloud supplies the OAuth token
+    # and ssh(1) is the transport.
+    if ! command -v gcloud >/dev/null 2>&1; then
+        die "gcloud CLI is not installed." \
+            "" \
+            "It is required to authenticate against Cloud Shell." \
+            "" \
+            "Install it with Homebrew:" \
+            "    brew install --cask google-cloud-sdk" \
+            "" \
+            "Other platforms: https://cloud.google.com/sdk/docs/install"
+    fi
+    ok "gcloud"
+    command -v ssh >/dev/null 2>&1 || die "ssh(1) not found — required for the GCP transport."
+    ok "ssh"
 fi
-ok "session-manager-plugin"
 
 # OpenVPN Connect is only needed on macOS, where the tool auto-imports the
 # profile. Elsewhere the user brings their own client, so this is advisory.
@@ -135,6 +174,24 @@ else
                "Check your network connection and try again."
     printf '%s' "$current_sum" > "$STAMP"
     ok "Installed boto3, cryptography, textual"
+fi
+
+# ---------------------------------------------------------------- credentials
+
+if [ "$PROVIDER" = "gcp" ]; then
+    step "Checking GCP credentials"
+    if ! gcloud auth print-access-token >/dev/null 2>&1; then
+        die "Could not get a GCP access token." \
+            "" \
+            "Authenticate with:" \
+            "    gcloud auth login"
+    fi
+    ok "GCP credentials valid"
+
+    step "Starting cloudshell-vpn"
+    printf '  Press %sCtrl+C%s to disconnect and clean up.\n\n' "$BOLD" "$RESET"
+    cd "$REPO_DIR"
+    exec python -m cloudshell_vpn "$@"
 fi
 
 # ------------------------------------------------------------ aws credentials
