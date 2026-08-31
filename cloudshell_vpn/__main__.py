@@ -90,11 +90,90 @@ def upload_agent(shell) -> None:
     shell.run(f"echo '{b64}' | base64 -d | gunzip > /tmp/vpn_agent_openvpn.py", timeout=5)
 
 
+OVPN_CONNECT_BIN = Path(
+    "/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect"
+)
+OVPN_PROFILE_NAME = "cloudshell-vpn"
+
+
+def _reveal(conf_path: Path) -> None:
+    """Hand the profile to the desktop, if there is one. 'open' is macOS-only."""
+    if sys.platform != "darwin":
+        return
+    import subprocess
+
+    subprocess.Popen(["open", str(conf_path)])
+
+
+def _check_openvpn_connect() -> None:
+    """Warn early on macOS if the client we auto-import into is missing."""
+    if sys.platform == "darwin" and not OVPN_CONNECT_BIN.parent.parent.parent.exists():
+        print("WARNING: OpenVPN Connect not found at /Applications/OpenVPN Connect/")
+        print("Install from: https://openvpn.net/client/")
+        print("The VPN config will be saved to ~/.cloudshell-vpn/cloudshell-vpn.ovpn "
+              "for manual import.\n")
+
+
+def import_into_openvpn_connect(conf_path: Path, log_msg=log.info) -> None:
+    """Import the profile and relaunch OpenVPN Connect so it auto-connects.
+
+    macOS only — elsewhere the user imports the profile into their own client.
+    """
+    import subprocess
+
+    if not OVPN_CONNECT_BIN.exists():
+        # log_msg, not log: the TUI disables logging, and this is the one
+        # message the user must see to finish connecting by hand.
+        log_msg(
+            "OpenVPN Connect not found! Install it from https://openvpn.net/client/ "
+            f"or import this profile into your own client: {conf_path}"
+        )
+        _reveal(conf_path)
+        return
+
+    subprocess.run(
+        [str(OVPN_CONNECT_BIN), f"--remove-profile={OVPN_PROFILE_NAME}"],
+        capture_output=True, timeout=10,
+    )
+    result = subprocess.run(
+        [str(OVPN_CONNECT_BIN), f"--import-profile={conf_path}", f"--name={OVPN_PROFILE_NAME}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if "success" not in result.stdout.lower():
+        log_msg(f"Auto-import failed, opening the config file instead: {result.stdout}")
+        _reveal(conf_path)
+        return
+
+    log_msg(f"Profile '{OVPN_PROFILE_NAME}' imported into OpenVPN Connect")
+    # Quit and relaunch to trigger auto-connect (connect-on-launch setting)
+    subprocess.run([str(OVPN_CONNECT_BIN), "--quit"], capture_output=True, timeout=3)
+    time.sleep(0.5)
+    # Launch minimized (no UI window) — connect-on-launch will auto-connect
+    subprocess.Popen(
+        [str(OVPN_CONNECT_BIN), "--minimize"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def teardown_openvpn_connect() -> None:
+    """Disconnect and drop the profile. Best effort — runs in a finally block."""
+    if not OVPN_CONNECT_BIN.exists():
+        return
+    import subprocess
+
+    subprocess.run([str(OVPN_CONNECT_BIN), "--quit"], capture_output=True, timeout=3)
+    subprocess.run(
+        [str(OVPN_CONNECT_BIN), f"--remove-profile={OVPN_PROFILE_NAME}"],
+        capture_output=True, timeout=3,
+    )
+
+
 def generate_ovpn_conf(
     pki: dict[str, str],
     local_port: int,
     exclude_ips: list[str],
     dns_servers: list[str] | None = None,
+    proto: str = "udp",
 ) -> str:
     """Generate OpenVPN .ovpn config with inline certs and net_gateway routes.
 
@@ -103,6 +182,12 @@ def generate_ovpn_conf(
     This is managed entirely by OpenVPN Connect — no external sudo required!
     """
     from .common import OVPN_PORT
+
+    if proto not in ("udp", "tcp"):
+        raise ValueError(f"invalid proto: {proto!r}")
+    # 'tcp' in a client profile means tcp-client; spell it out so the server's
+    # tcp-server has an unambiguous counterpart.
+    client_proto = "tcp-client" if proto == "tcp" else "udp"
 
     # Build route exclusions using net_gateway
     route_lines = []
@@ -119,7 +204,7 @@ def generate_ovpn_conf(
 
 client
 dev tun
-proto udp
+proto {client_proto}
 remote 127.0.0.1 {local_port}
 nobind
 
@@ -322,26 +407,7 @@ def run_openvpn_with_callbacks(
         ovpn_sock.bind(("127.0.0.1", OVPN_PORT))
 
         # Auto-import into OpenVPN Connect
-        ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
-        if ovpn_connect_bin.exists():
-            import subprocess
-            subprocess.run([str(ovpn_connect_bin), "--remove-profile=cloudshell-vpn"], capture_output=True, timeout=10)
-            result = subprocess.run(
-                [str(ovpn_connect_bin), f"--import-profile={conf_path}", "--name=cloudshell-vpn"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if "success" in result.stdout.lower():
-                log_msg("Profile imported into OpenVPN Connect")
-                subprocess.run([str(ovpn_connect_bin), "--quit"], capture_output=True, timeout=3)
-                time.sleep(0.5)
-                subprocess.Popen([str(ovpn_connect_bin), "--minimize"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                log_msg(f"[yellow]Auto-import failed, opening config file...[/]")
-                subprocess.Popen(["open", str(conf_path)])
-        else:
-            log_msg("[yellow]OpenVPN Connect not found, opening config file...[/]")
-            import subprocess
-            subprocess.Popen(["open", str(conf_path)])
+        import_into_openvpn_connect(conf_path, log_msg)
 
         # Signal connected
         status_callback(connected=True, bytes_in=0, bytes_out=0, latency_ms=0)
@@ -439,19 +505,19 @@ def run_openvpn_with_callbacks(
             pass
 
         # Cleanup OpenVPN Connect
-        ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
-        if ovpn_connect_bin.exists():
-            import subprocess
-            try:
-                subprocess.run([str(ovpn_connect_bin), "--quit"], capture_output=True, timeout=3)
-                subprocess.run([str(ovpn_connect_bin), "--remove-profile=cloudshell-vpn"], capture_output=True, timeout=3)
-            except Exception:
-                pass
-        
+        try:
+            teardown_openvpn_connect()
+        except Exception:
+            pass
+
         log_msg("Disconnected.")
 
 
-def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
+def run_openvpn(
+    region: str,
+    dns_servers: list[str] | None = None,
+    extra_excludes: list[str] | None = None,
+) -> None:
     """Run VPN using OpenVPN.
 
     Route exclusions are handled in the .ovpn config via
@@ -584,6 +650,9 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
 
         # Only the agent IP needs to bypass the VPN (for the UDP relay to work)
         exclude_ips = [agent_ip]
+        for ip in extra_excludes or []:
+            if ip not in exclude_ips:
+                exclude_ips.append(ip)
         log.info(f"IPs to exclude from VPN: {exclude_ips}")
 
         # Start heartbeat BEFORE writing config
@@ -607,48 +676,13 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
         ovpn_sock.bind(("127.0.0.1", OVPN_PORT))
 
         # Try to auto-import into OpenVPN Connect (if installed)
-        ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
-        if ovpn_connect_bin.exists():
-            import subprocess
-            # Remove old profile silently
-            subprocess.run(
-                [str(ovpn_connect_bin), "--remove-profile=cloudshell-vpn"],
-                capture_output=True, timeout=10,
-            )
-            # Import new profile silently
-            result = subprocess.run(
-                [str(ovpn_connect_bin), f"--import-profile={conf_path}", "--name=cloudshell-vpn"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if "success" in result.stdout.lower():
-                log.info("Profile 'cloudshell-vpn' imported into OpenVPN Connect")
-                # Quit and relaunch to trigger auto-connect (connect-on-launch setting)
-                subprocess.run([str(ovpn_connect_bin), "--quit"], capture_output=True, timeout=3)
-                time.sleep(0.5)
-                # Launch minimized (no UI window) - connect-on-launch will auto-connect
-                subprocess.Popen(
-                    [str(ovpn_connect_bin), "--minimize"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                log.info(
-                    f"\n{'=' * 55}\n"
-                    f"  VPN connecting...\n"
-                    f"  Press Ctrl+C to disconnect and exit\n"
-                    f"{'=' * 55}\n"
-                )
-            else:
-                log.warning(f"Auto-import failed: {result.stdout}")
-                subprocess.Popen(["open", str(conf_path)])
-        else:
-            # OpenVPN Connect not found
-            log.error(
-                "OpenVPN Connect not found!\n"
-                "Install it from: https://openvpn.net/client/\n"
-                f"Or manually import: {conf_path}"
-            )
-            # Try to open the file anyway (might work with another app)
-            import subprocess
-            subprocess.Popen(["open", str(conf_path)])
+        import_into_openvpn_connect(conf_path)
+        log.info(
+            f"\n{'=' * 55}\n"
+            f"  VPN connecting...\n"
+            f"  Press Ctrl+C to disconnect and exit\n"
+            f"{'=' * 55}\n"
+        )
 
         # Run UDP relay (blocks) — socket is already connected
         udp_relay(udp, ovpn_sock)
@@ -677,20 +711,8 @@ def run_openvpn(region: str, dns_servers: list[str] | None = None) -> None:
             pass
 
         # Disconnect and cleanup OpenVPN Connect
-        ovpn_connect_bin = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app/Contents/MacOS/OpenVPN Connect")
-        if ovpn_connect_bin.exists():
-            import subprocess
-            # Quit the app (disconnects VPN)
-            subprocess.run(
-                [str(ovpn_connect_bin), "--quit"],
-                capture_output=True, timeout=3,
-            )
-            # Remove the profile
-            subprocess.run(
-                [str(ovpn_connect_bin), "--remove-profile=cloudshell-vpn"],
-                capture_output=True, timeout=3,
-            )
-        
+        teardown_openvpn_connect()
+
         log.info("Done.")
 
 
@@ -699,10 +721,30 @@ def main() -> None:
 
     p = argparse.ArgumentParser(
         prog="python -m cloudshell_vpn",
-        description="Free VPN via AWS CloudShell + NAT hole punching (OpenVPN)",
+        description="Free VPN via AWS CloudShell or GCP Cloud Shell (OpenVPN)",
     )
-    p.add_argument("--region", "-r", help="AWS region (interactive picker if omitted)")
+    p.add_argument(
+        "--provider", choices=("aws", "gcp"), default="aws",
+        help="Cloud backend (default: aws)",
+    )
+    p.add_argument("--region", "-r", help="AWS region (interactive picker if omitted; AWS only)")
     p.add_argument("--profile", "-p", help="AWS profile name (uses default credential chain if omitted)")
+    p.add_argument(
+        "--transport", choices=("punch", "ssh"), default="punch",
+        help="GCP only: 'punch' relays OpenVPN/UDP through a NAT hole (faster); "
+             "'ssh' carries OpenVPN/TCP over an SSH forward (works behind "
+             "symmetric NAT and corporate proxies)",
+    )
+    p.add_argument(
+        "--ssh-proxy-command",
+        help="GCP only: ssh(1) ProxyCommand, e.g. "
+             "'nc -X connect -x proxy.corp:3128 %%h %%p'",
+    )
+    p.add_argument(
+        "--exclude-ip", action="append", metavar="IP",
+        help="Extra IPv4 address to route outside the tunnel (repeatable). "
+             "Needed for a proxy or relay the tunnel itself depends on.",
+    )
     p.add_argument(
         "--no-tui", action="store_true",
         help="Disable TUI, use simple log output",
@@ -733,6 +775,38 @@ def main() -> None:
             print("ERROR: --dns was empty", file=sys.stderr)
             sys.exit(1)
 
+    # These become 'route <ip> ... net_gateway' lines in the .ovpn, which a
+    # privileged binary reads — validate before anything else touches them.
+    extra_excludes = []
+    if args.exclude_ip:
+        import ipaddress
+    for entry in args.exclude_ip or []:
+        try:
+            extra_excludes.append(str(ipaddress.IPv4Address(entry.strip())))
+        except ValueError:
+            print(f"ERROR: invalid --exclude-ip address: {entry!r}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.provider == "gcp":
+        _check_openvpn_connect()
+        from .gcp import GcpError, validate_credentials as validate_gcp
+        from .gcp_run import run_gcp
+
+        try:
+            validate_gcp()
+        except GcpError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.region:
+            log.warning("--region is ignored on GCP: Google assigns the Cloud Shell region.")
+        run_gcp(
+            transport=args.transport,
+            dns_servers=dns_servers,
+            extra_excludes=extra_excludes,
+            ssh_proxy_command=args.ssh_proxy_command,
+        )
+        return
+
     # Override AWS profile if specified
     if args.profile:
         from . import common
@@ -752,18 +826,13 @@ def main() -> None:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
     
-    # Check OpenVPN Connect on macOS
-    ovpn_app = Path("/Applications/OpenVPN Connect/OpenVPN Connect.app")
-    if sys.platform == "darwin" and not ovpn_app.exists():
-        print("WARNING: OpenVPN Connect not found at /Applications/OpenVPN Connect/")
-        print("Install from: https://openvpn.net/client/")
-        print("The VPN config will be saved to ~/.cloudshell-vpn/cloudshell-vpn.ovpn for manual import.\n")
+    _check_openvpn_connect()
 
     if args.region or args.no_tui:
         # Direct region or no-tui flag - use classic mode
         region = args.region or pick_region()
         log.info(f"Selected region: {region}")
-        run_openvpn(region, dns_servers)
+        run_openvpn(region, dns_servers, extra_excludes)
     else:
         # Full TUI mode - disable standard logging
         logging.disable(logging.CRITICAL)
