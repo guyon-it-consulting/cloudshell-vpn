@@ -35,8 +35,18 @@ AWS has no `ssh` option: CloudShell is reached over SSM, which does not forward 
 
 Common to both providers:
 
-- macOS with [OpenVPN Connect](https://openvpn.net/client/) installed (free)
-- Python 3.10+
+- macOS or Linux, Python 3.10+
+- On macOS: [OpenVPN Connect](https://openvpn.net/client/) installed (free) — the
+  tool auto-imports and auto-connects the generated profile
+- On Linux: any OpenVPN client (e.g. `openvpn`, or NetworkManager's
+  `network-manager-openvpn` plugin). There is no auto-import; the profile is
+  written to `~/.cloudshell-vpn/cloudshell-vpn.ovpn` and you import/connect it
+  yourself, e.g.:
+  ```bash
+  sudo openvpn --config ~/.cloudshell-vpn/cloudshell-vpn.ovpn
+  # or, with NetworkManager:
+  nmcli connection import type openvpn file ~/.cloudshell-vpn/cloudshell-vpn.ovpn
+  ```
 
 **AWS:**
 
