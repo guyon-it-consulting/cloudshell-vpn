@@ -133,9 +133,13 @@ fi
 step "Setting up the virtualenv"
 
 # A venv whose interpreter has been removed (e.g. Homebrew upgraded Python and
-# the old minor version is gone) is broken in a way pip cannot repair. Detect
-# that and rebuild from scratch rather than failing later with a confusing error.
-if [ -d "$VENV_DIR" ] && ! "$VENV_DIR/bin/python" -c "" >/dev/null 2>&1; then
+# the old minor version is gone) is broken in a way pip cannot repair. The same
+# goes for a venv whose creation was interrupted, leaving the python symlink but
+# no activate script. Detect either and rebuild from scratch rather than failing
+# later with a confusing error.
+if [ -d "$VENV_DIR" ] \
+    && { ! "$VENV_DIR/bin/python" -c "" >/dev/null 2>&1 \
+         || [ ! -f "$VENV_DIR/bin/activate" ]; }; then
     warn "Existing virtualenv is broken, recreating it."
     rm -rf "$VENV_DIR"
 fi
