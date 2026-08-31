@@ -42,17 +42,65 @@ def _run(cmd: str, check: bool = False) -> int:
     return r
 
 
+def _out(cmd: str) -> str:
+    """Run a command and return its stdout, empty on failure."""
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _install_openvpn() -> None:
+    """Install openvpn on whatever distro CloudShell is running.
+
+    AWS CloudShell is Amazon Linux (dnf), GCP Cloud Shell is Debian/Ubuntu
+    (apt-get) and ships openvpn preinstalled — so the common case is a no-op.
+    """
+    if _run("command -v openvpn") == 0:
+        print("SETUP: openvpn already present", flush=True)
+        return
+    if _run("command -v dnf") == 0:
+        _run("sudo dnf install -y openvpn iptables iproute")
+    elif _run("command -v apt-get") == 0:
+        _run("sudo apt-get update -qq")
+        _run("sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openvpn iptables iproute2")
+    elif _run("command -v yum") == 0:
+        _run("sudo yum install -y openvpn iptables iproute")
+    else:
+        print("SETUP_ERROR: no supported package manager (dnf/apt-get/yum)", flush=True)
+        sys.exit(1)
+    if _run("command -v openvpn") != 0:
+        print("SETUP_ERROR: openvpn install failed", flush=True)
+        sys.exit(1)
+
+
+def _egress_interface() -> str:
+    """Interface carrying the default route — what NAT must masquerade onto.
+
+    Hardcoding eth0 happens to work on both clouds today, but the container
+    netns naming is not a contract. Derive it, fall back to eth0.
+    """
+    out = _out("ip -4 route show default")
+    parts = out.split()
+    if "dev" in parts:
+        return parts[parts.index("dev") + 1]
+    return "eth0"
+
+
 def setup_openvpn(
     ca_cert: str,
     server_cert: str,
     server_key: str,
     ta_key: str,
     dns_servers: list[str] | None = None,
+    proto: str = "udp",
 ) -> None:
-    """Set up OpenVPN server with provided PKI."""
+    """Set up OpenVPN server with provided PKI.
+
+    proto is "udp" for the NAT hole-punch transport, or "tcp-server" when the
+    tunnel rides an SSH port forward instead.
+    """
     dns_servers = dns_servers or ["1.1.1.1", "1.0.0.1"]
     print("SETUP: Installing openvpn...", flush=True)
-    _run("sudo dnf install -y openvpn iptables iproute")
+    _install_openvpn()
 
     # Write PKI files
     print("SETUP: Writing PKI files...", flush=True)
@@ -74,11 +122,17 @@ def setup_openvpn(
     # Note: OpenVPN listens on 127.0.0.1:1194 — our relay bridges to external
     # Using 'dh none' to use ECDH instead of DH (no separate DH file needed)
     # Keep the pushed DNS in sync with what the client config already sets.
+    # proto reaches a config file read by a privileged binary — allow only the
+    # two values the caller is ever meant to pass.
+    if proto not in ("udp", "tcp-server"):
+        print(f"SETUP_ERROR: invalid proto {proto!r}", flush=True)
+        sys.exit(1)
+
     dns_push = "\n".join(f'push "dhcp-option DNS {ip}"' for ip in dns_servers)
     server_conf = f"""# CloudShell VPN OpenVPN Server
 local 127.0.0.1
 port {OVPN_PORT}
-proto udp
+proto {proto}
 dev tun
 
 # PKI
@@ -129,8 +183,9 @@ status /tmp/ovpn/status.log 30
     _run("sudo sysctl -w net.ipv4.ip_forward=1")
 
     # Set up NAT
-    print("SETUP: Setting up NAT...", flush=True)
-    _run(f"sudo iptables -t nat -A POSTROUTING -s {OVPN_SUBNET}.0/24 -o eth0 -j MASQUERADE")
+    egress = _egress_interface()
+    print(f"SETUP: Setting up NAT on {egress}...", flush=True)
+    _run(f"sudo iptables -t nat -A POSTROUTING -s {OVPN_SUBNET}.0/24 -o {egress} -j MASQUERADE")
     _run("sudo iptables -A FORWARD -i tun0 -j ACCEPT")
     _run("sudo iptables -A FORWARD -o tun0 -j ACCEPT")
 
@@ -288,10 +343,19 @@ def main() -> None:
 
     import base64
     
+    # "punch" bridges a NAT-punched UDP hole to OpenVPN; "ssh" skips the relay
+    # entirely and lets an SSH -L forward carry OpenVPN over TCP.
+    transport = os.environ.get("VPN_TRANSPORT", "punch")
+    if transport not in ("punch", "ssh"):
+        print(f"AGENT_ERROR: invalid VPN_TRANSPORT: {transport!r}", flush=True)
+        sys.exit(1)
+
     udp_port = int(sys.argv[1])
-    laptop_ip, laptop_port = sys.argv[2].rsplit(":", 1)
-    laptop_addr = (laptop_ip, int(laptop_port))
-    
+    laptop_addr = None
+    if transport == "punch":
+        laptop_ip, laptop_port = sys.argv[2].rsplit(":", 1)
+        laptop_addr = (laptop_ip, int(laptop_port))
+
     # Decode base64-encoded PKI (to avoid shell escaping issues)
     ca_cert = base64.b64decode(sys.argv[3]).decode()
     server_cert = base64.b64decode(sys.argv[4]).decode()
@@ -318,10 +382,21 @@ def main() -> None:
             print(f"AGENT_ERROR: invalid DNS address: {entry!r}", flush=True)
             sys.exit(1)
 
-    print(f"AGENT: Starting with port={udp_port}, laptop={laptop_addr}", flush=True)
+    print(f"AGENT: Starting transport={transport}, port={udp_port}, laptop={laptop_addr}", flush=True)
 
     # Set up OpenVPN
-    setup_openvpn(ca_cert, server_cert, server_key, ta_key, dns_servers)
+    proto = "tcp-server" if transport == "ssh" else "udp"
+    setup_openvpn(ca_cert, server_cert, server_key, ta_key, dns_servers, proto)
+
+    if transport == "ssh":
+        # The SSH -L forward already reaches 127.0.0.1:OVPN_PORT, so there is
+        # nothing to relay and no endpoint to discover. Stay alive so the shell
+        # (and with it the forward) keeps running.
+        print("AGENT_READY:ssh", flush=True)
+        print("RELAY_ACTIVE", flush=True)
+        while True:
+            time.sleep(60)
+            print("AGENT: alive", flush=True)
 
     # Bind UDP socket
     print(f"AGENT: Binding UDP socket to port {udp_port}", flush=True)
