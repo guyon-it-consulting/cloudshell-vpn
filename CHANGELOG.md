@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **GCP Cloud Shell as a second provider** (`--provider gcp`). Cloud Shell there
+  exposes a real SSH endpoint rather than SSM, so the backend registers an
+  ephemeral RSA key through the Cloud Shell API (`addPublicKey`), drives one SSH
+  session as the control channel, and removes the key on exit. Verified
+  end-to-end from an isolated network namespace: tunnel up, NAT masquerade
+  applied, traffic exiting from the Cloud Shell IP.
+- **`--transport ssh` (GCP only).** Carries OpenVPN over TCP through an
+  `ssh -L` forward instead of a NAT-punched UDP hole. No STUN, no hole punch, so
+  it works behind symmetric NAT and corporate proxies — at the cost of TCP-in-TCP
+  throughput. `--ssh-proxy-command` plugs in a `ProxyCommand` for proxied
+  networks.
+- **`--exclude-ip`** (both providers) to route additional addresses outside the
+  tunnel, for a proxy or relay the tunnel itself depends on.
+
+### Changed
+
+- The agent installs openvpn through whichever package manager it finds
+  (`dnf`/`apt-get`/`yum`) and skips the install when openvpn is already present,
+  instead of assuming Amazon Linux's `dnf`.
+- NAT masquerade now targets the interface carrying the default route rather
+  than a hardcoded `eth0`.
+- `boto3` is imported lazily, so the GCP path no longer pulls in the AWS SDK.
+- OpenVPN Connect import/teardown moved into shared helpers used by both
+  providers.
+
 ## [0.1.1] — 2026-08-28
 
 ### Fixed

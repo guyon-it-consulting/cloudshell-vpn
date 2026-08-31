@@ -37,9 +37,30 @@ die() {
     exit 1
 }
 
+# ------------------------------------------------------------------ provider
+
+# The provider decides which CLI and which credentials we check for, so it has
+# to be resolved before the pre-flight checks — not just passed through.
+PROVIDER="aws"
+prev=""
+for arg in "$@"; do
+    case "$prev" in
+        --provider) PROVIDER="$arg" ;;
+    esac
+    case "$arg" in
+        --provider=*) PROVIDER="${arg#--provider=}" ;;
+    esac
+    prev="$arg"
+done
+
+case "$PROVIDER" in
+    aws|gcp) ;;
+    *) die "Unknown --provider '$PROVIDER' (expected 'aws' or 'gcp')." ;;
+esac
+
 # ---------------------------------------------------------------- prerequisites
 
-step "Checking prerequisites"
+step "Checking prerequisites (provider: $PROVIDER)"
 
 # Find a Python >= 3.10. python3 is usually it, but a system python3 can be
 # older than the venv-capable one installed by Homebrew, so try the explicit
@@ -53,39 +74,109 @@ for candidate in python3.14 python3.13 python3.12 python3.11 python3.10 python3;
     fi
 done
 
+OS_NAME="$(uname -s)"
+
 if [ -z "$PYTHON" ]; then
-    die "Python 3.$MIN_PY_MINOR or newer is required, and none was found." \
-        "" \
-        "Install it with Homebrew:" \
-        "    brew install python@3.12" \
-        "" \
-        "Or download it from https://www.python.org/downloads/"
+    if [ "$OS_NAME" = "Linux" ]; then
+        die "Python 3.$MIN_PY_MINOR or newer is required, and none was found." \
+            "" \
+            "Install it with your package manager:" \
+            "    sudo apt install python3 python3-venv     # Debian/Ubuntu" \
+            "    sudo dnf install python3                  # Fedora/RHEL" \
+            "    sudo pacman -S python                      # Arch" \
+            "" \
+            "Or download it from https://www.python.org/downloads/"
+    else
+        die "Python 3.$MIN_PY_MINOR or newer is required, and none was found." \
+            "" \
+            "Install it with Homebrew:" \
+            "    brew install python@3.12" \
+            "" \
+            "Or download it from https://www.python.org/downloads/"
+    fi
 fi
 ok "Python $("$PYTHON" -c 'import platform; print(platform.python_version())') ($PYTHON)"
 
-# session-manager-plugin is what lets the AWS CLI/boto3 open a CloudShell
-# session. Without it the tool cannot connect at all.
-if ! command -v session-manager-plugin >/dev/null 2>&1; then
-    die "session-manager-plugin is not installed." \
-        "" \
-        "It is required to open a session inside CloudShell." \
-        "" \
-        "Install it with Homebrew:" \
-        "    brew install --cask session-manager-plugin" \
-        "" \
-        "Other platforms: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+if [ "$PROVIDER" = "aws" ]; then
+    # session-manager-plugin is what lets the AWS CLI/boto3 open a CloudShell
+    # session. Without it the tool cannot connect at all.
+    if ! command -v session-manager-plugin >/dev/null 2>&1; then
+        if [ "$OS_NAME" = "Linux" ]; then
+            die "session-manager-plugin is not installed." \
+                "" \
+                "It is required to open a session inside CloudShell." \
+                "" \
+                "Debian/Ubuntu (x86_64):" \
+                "    curl -fsSL \"https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb\" -o /tmp/session-manager-plugin.deb" \
+                "    sudo dpkg -i /tmp/session-manager-plugin.deb" \
+                "" \
+                "RHEL/Fedora/Amazon Linux (x86_64):" \
+                "    sudo dnf install -y \"https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm\"" \
+                "" \
+                "Other platforms/architectures: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+        else
+            die "session-manager-plugin is not installed." \
+                "" \
+                "It is required to open a session inside CloudShell." \
+                "" \
+                "Install it with Homebrew:" \
+                "    brew install --cask session-manager-plugin" \
+                "" \
+                "Other platforms: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
+        fi
+    fi
+    ok "session-manager-plugin"
+else
+    # GCP talks to Cloud Shell over plain SSH; gcloud supplies the OAuth token
+    # and ssh(1) is the transport.
+    if ! command -v gcloud >/dev/null 2>&1; then
+        if [ "$OS_NAME" = "Linux" ]; then
+            die "gcloud CLI is not installed." \
+                "" \
+                "It is required to authenticate against Cloud Shell." \
+                "" \
+                "Install it with your package manager, or the interactive installer:" \
+                "    curl https://sdk.cloud.google.com | bash" \
+                "" \
+                "Debian/Ubuntu (apt repo): https://cloud.google.com/sdk/docs/install#deb" \
+                "Other platforms: https://cloud.google.com/sdk/docs/install"
+        else
+            die "gcloud CLI is not installed." \
+                "" \
+                "It is required to authenticate against Cloud Shell." \
+                "" \
+                "Install it with Homebrew:" \
+                "    brew install --cask google-cloud-sdk" \
+                "" \
+                "Other platforms: https://cloud.google.com/sdk/docs/install"
+        fi
+    fi
+    ok "gcloud"
+    command -v ssh >/dev/null 2>&1 || die "ssh(1) not found — required for the GCP transport."
+    ok "ssh"
 fi
-ok "session-manager-plugin"
 
-# OpenVPN Connect is only needed on macOS, where the tool auto-imports the
-# profile. Elsewhere the user brings their own client, so this is advisory.
-if [ "$(uname -s)" = "Darwin" ]; then
+# OpenVPN Connect (macOS) is auto-imported into; on Linux there is no
+# equivalent official GUI client, so just check that *some* OpenVPN client is
+# available and point the user at how to use the generated .ovpn profile.
+if [ "$OS_NAME" = "Darwin" ]; then
     if [ -d "/Applications/OpenVPN Connect/OpenVPN Connect.app" ] \
         || [ -d "/Applications/OpenVPN Connect.app" ]; then
         ok "OpenVPN Connect"
     else
         warn "OpenVPN Connect not found in /Applications."
         warn "Download it (free) from https://openvpn.net/client/ before connecting."
+    fi
+elif [ "$OS_NAME" = "Linux" ]; then
+    if command -v openvpn >/dev/null 2>&1 || command -v nmcli >/dev/null 2>&1; then
+        ok "OpenVPN client found ($(command -v openvpn || command -v nmcli))"
+    else
+        warn "No OpenVPN client found (openvpn / NetworkManager)."
+        warn "Install one, e.g.:"
+        warn "    sudo apt install openvpn                       # Debian/Ubuntu"
+        warn "    sudo apt install network-manager-openvpn-gnome # NetworkManager GUI plugin"
+        warn "The VPN config will be saved to ~/.cloudshell-vpn/cloudshell-vpn.ovpn"
+        warn "for manual import (nmcli import, or 'sudo openvpn --config <file>')."
     fi
 fi
 
@@ -94,9 +185,13 @@ fi
 step "Setting up the virtualenv"
 
 # A venv whose interpreter has been removed (e.g. Homebrew upgraded Python and
-# the old minor version is gone) is broken in a way pip cannot repair. Detect
-# that and rebuild from scratch rather than failing later with a confusing error.
-if [ -d "$VENV_DIR" ] && ! "$VENV_DIR/bin/python" -c "" >/dev/null 2>&1; then
+# the old minor version is gone) is broken in a way pip cannot repair. The same
+# goes for a venv whose creation was interrupted, leaving the python symlink but
+# no activate script. Detect either and rebuild from scratch rather than failing
+# later with a confusing error.
+if [ -d "$VENV_DIR" ] \
+    && { ! "$VENV_DIR/bin/python" -c "" >/dev/null 2>&1 \
+         || [ ! -f "$VENV_DIR/bin/activate" ]; }; then
     warn "Existing virtualenv is broken, recreating it."
     rm -rf "$VENV_DIR"
 fi
@@ -122,7 +217,13 @@ step "Installing dependencies"
 # Keeps repeat launches fast without ever going stale.
 STAMP="$VENV_DIR/.requirements.sha"
 REQ_FILE="$REPO_DIR/requirements.txt"
-current_sum="$(shasum -a 256 "$REQ_FILE" | awk '{print $1}')"
+# sha256sum is standard on Linux; shasum (Perl-based) is what macOS ships.
+# Fall back between the two so this works on both without extra deps.
+if command -v sha256sum >/dev/null 2>&1; then
+    current_sum="$(sha256sum "$REQ_FILE" | awk '{print $1}')"
+else
+    current_sum="$(shasum -a 256 "$REQ_FILE" | awk '{print $1}')"
+fi
 
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$current_sum" ]; then
     ok "Dependencies already up to date"
@@ -135,6 +236,24 @@ else
                "Check your network connection and try again."
     printf '%s' "$current_sum" > "$STAMP"
     ok "Installed boto3, cryptography, textual"
+fi
+
+# ---------------------------------------------------------------- credentials
+
+if [ "$PROVIDER" = "gcp" ]; then
+    step "Checking GCP credentials"
+    if ! gcloud auth print-access-token >/dev/null 2>&1; then
+        die "Could not get a GCP access token." \
+            "" \
+            "Authenticate with:" \
+            "    gcloud auth login"
+    fi
+    ok "GCP credentials valid"
+
+    step "Starting cloudshell-vpn"
+    printf '  Press %sCtrl+C%s to disconnect and clean up.\n\n' "$BOLD" "$RESET"
+    cd "$REPO_DIR"
+    exec python -m cloudshell_vpn "$@"
 fi
 
 # ------------------------------------------------------------ aws credentials

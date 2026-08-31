@@ -1,6 +1,6 @@
 # cloudshell-vpn
 
-Free VPN using AWS CloudShell + NAT hole punching. Routes all traffic through any AWS region — at zero cost.
+Free VPN using a cloud shell as the exit node. Routes all traffic through **AWS CloudShell** (any region) or **GCP Cloud Shell** — at zero cost.
 
 Read the story behind it: [How I built a free VPN over AWS CloudShell](https://builder.aws.com/content/3HmFxIRJFHC3cAaqUxByvcY8hDI/how-i-build-a-free-vpn-over-aws-cloudshell).
 
@@ -8,27 +8,57 @@ Read the story behind it: [How I built a free VPN over AWS CloudShell](https://b
 
 ```
 macOS OpenVPN Connect (tun, full tunnel)
-        ↓ OpenVPN UDP → 127.0.0.1:1194
-  Local UDP relay (unprivileged)
-        ↓ NAT-punched UDP hole
-  AWS CloudShell (openvpn + iptables NAT)
+        ↓ OpenVPN → 127.0.0.1:1194
+  Local relay  ──────────────────┐
+        ↓ NAT-punched UDP hole   │  or: ssh -L forward (GCP only)
+  Cloud shell (openvpn + iptables NAT)
         ↓ masquerade
-  Internet (exits from AWS region IP)
+  Internet (exits from the cloud shell's IP)
 ```
 
-1. Creates a non-VPC CloudShell environment in your chosen region
+1. Starts a cloud shell environment (AWS: any region you pick; GCP: the one Google assigned you)
 2. Generates ephemeral PKI (CA, server cert, client cert)
-3. Inside CloudShell: sets up OpenVPN server + NAT masquerade
-4. Both sides discover their public endpoints via STUN, then UDP hole-punch
+3. Inside the shell: sets up OpenVPN server + NAT masquerade
+4. Establishes the data path — see **Transports** below
 5. Writes `~/.cloudshell-vpn/cloudshell-vpn.ovpn` — auto-imported into OpenVPN Connect
+
+### Transports
+
+| Transport | Providers | How | When |
+|---|---|---|---|
+| `punch` (default) | AWS, GCP | Both sides discover their public endpoint via STUN, then UDP hole-punch | Fastest. Needs outbound UDP and a non-symmetric NAT |
+| `ssh` | GCP only | OpenVPN/TCP through an `ssh -L` port forward | Survives symmetric NAT and corporate proxies. Slower (TCP-in-TCP) |
+
+AWS has no `ssh` option: CloudShell is reached over SSM, which does not forward ports. GCP Cloud Shell hands out a real SSH endpoint with `AllowTcpForwarding yes`, which is what makes the second transport possible. (`PermitTunnel` is off, so `ssh -w` layer-3 tunnelling is not available on either.)
 
 ## Prerequisites
 
-- macOS with [OpenVPN Connect](https://openvpn.net/client/) installed (free)
-- Python 3.10+
+Common to both providers:
+
+- macOS or Linux, Python 3.10+
+- On macOS: [OpenVPN Connect](https://openvpn.net/client/) installed (free) — the
+  tool auto-imports and auto-connects the generated profile
+- On Linux: any OpenVPN client (e.g. `openvpn`, or NetworkManager's
+  `network-manager-openvpn` plugin). There is no auto-import; the profile is
+  written to `~/.cloudshell-vpn/cloudshell-vpn.ovpn` and you import/connect it
+  yourself, e.g.:
+  ```bash
+  sudo openvpn --config ~/.cloudshell-vpn/cloudshell-vpn.ovpn
+  # or, with NetworkManager:
+  nmcli connection import type openvpn file ~/.cloudshell-vpn/cloudshell-vpn.ovpn
+  ```
+
+**AWS:**
+
 - `session-manager-plugin` ([install](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html))
 - AWS credentials configured (`AWS_PROFILE` env var, or default profile)
 - Non-symmetric NAT (most home networks work)
+
+**GCP:**
+
+- `gcloud` CLI, authenticated (`gcloud auth login`), and `ssh`
+- Cloud Shell enabled for the account
+- Non-symmetric NAT for `--transport punch`; `--transport ssh` has no NAT requirement
 
 ## Quick start
 
@@ -51,6 +81,10 @@ Pass any flag through to the tool:
 ./run.sh --profile my-profile
 ./run.sh --no-tui
 ./run.sh --dns 9.9.9.9,149.112.112.112
+
+# GCP
+./run.sh --provider gcp
+./run.sh --provider gcp --transport ssh
 ```
 
 ### Manual setup
@@ -66,9 +100,13 @@ python -m cloudshell_vpn
 
 | Flag | Description |
 |------|-------------|
-| `--region`, `-r` | AWS region (skips interactive picker) |
+| `--provider` | `aws` (default) or `gcp` |
+| `--region`, `-r` | AWS region (skips interactive picker). Ignored on GCP |
 | `--profile`, `-p` | AWS profile name (uses default credential chain if omitted) |
-| `--no-tui` | Disable TUI, use simple log output |
+| `--transport` | GCP only: `punch` (default) or `ssh` |
+| `--ssh-proxy-command` | GCP only: `ProxyCommand` for `ssh(1)`, to reach Cloud Shell through a proxy |
+| `--exclude-ip` | Extra IPv4 address to route outside the tunnel (repeatable) |
+| `--no-tui` | Disable TUI, use simple log output. Implied on GCP (no region to pick) |
 | `--dns` | Comma-separated DNS servers (default: `1.1.1.1,1.0.0.1`) |
 
 ### What happens
@@ -114,6 +152,43 @@ Read-only permission sets (**ReadOnlyAccess**, **ViewOnlyAccess**) will **not** 
 
 Alternatively, attach the AWS managed policy `AWSCloudShellFullAccess` and add `ec2:DescribeRegions` + `sts:GetCallerIdentity`.
 
+## GCP Cloud Shell
+
+```bash
+./run.sh --provider gcp
+```
+
+The tool generates an ephemeral RSA keypair, registers it with the Cloud Shell
+API (`addPublicKey`), opens one SSH session to the environment, and removes the
+key again on exit. No IAM policy to write: Cloud Shell access is tied to the
+account, and the API needs only the `cloud-platform` scope `gcloud auth login`
+already grants.
+
+**No region choice.** Every Google account gets exactly one Cloud Shell
+environment, in a region Google assigns. `--region` is ignored. If you need a
+specific exit country, use the AWS provider.
+
+**Behind a corporate proxy.** Cloud Shell's SSH endpoint is a non-standard port
+(6000), which most corporate egress filters block, and hole punching needs
+outbound UDP that such networks rarely allow. Both problems go away with the
+`ssh` transport plus a `ProxyCommand`:
+
+```bash
+./run.sh --provider gcp --transport ssh \
+    --ssh-proxy-command 'nc -X connect -x proxy.corp:3128 %h %p' \
+    --exclude-ip <proxy-ip>
+```
+
+`--exclude-ip` matters: the proxy carries the tunnel, so it must be routed
+outside it. If the proxy intercepts TLS, point gcloud at your corporate CA with
+`gcloud config set core/custom_ca_certs_file <ca.pem>`. Check your employer's
+network policy before doing any of this.
+
+**Limits.** 50 hours per week (vs 200 h/month/region on AWS); one environment per
+account, shared with your normal Cloud Shell use; sessions end after 20 minutes
+idle or 12 hours. Outbound transfer is not billed, so unlike AWS this is free
+rather than nearly free.
+
 ## No sudo required
 
 Route exclusions are handled in the `.ovpn` config via `net_gateway` directives.
@@ -152,6 +227,10 @@ That is fine for geo-shifting or for shielding traffic on an untrusted network.
 It is not equivalent to a no-logs VPN: you have replaced your ISP as the
 observer with Amazon, not removed the observer.
 
+The same holds on GCP, with Google in Amazon's place: the Cloud Shell API calls
+are logged against your Google account, and the exit IP belongs to a Google
+range that resolves to `*.bc.googleusercontent.com` — visibly a cloud IP.
+
 DNS goes to Cloudflare by default (shorter retention than Google's resolvers).
 Use `--dns` to point at a resolver you prefer.
 
@@ -159,26 +238,31 @@ Use `--dns` to point at a resolver you prefer.
 
 **Nearly free.** CloudShell compute is free. STUN is free. No EC2 instances, no NAT Gateway.
 
-Outbound data transfer is billed at [standard AWS rates](https://aws.amazon.com/ec2/pricing/on-demand/#Data_Transfer) (~$0.09/GB). The first 100 GB/month are included in the AWS Free Tier. Casual browsing and geo-shifting should stay well within that.
+On AWS, outbound data transfer is billed at [standard rates](https://aws.amazon.com/ec2/pricing/on-demand/#Data_Transfer) (~$0.09/GB). The first 100 GB/month are included in the AWS Free Tier. Casual browsing and geo-shifting should stay well within that.
+
+On GCP, Cloud Shell egress is not billed at all — the provider trade is a free exit node in exchange for no region choice.
 
 ## Limitations
 
-- Only works with non-symmetric NAT (most residential, fails on some corporate firewalls)
-- CloudShell has a [monthly usage quota](https://docs.aws.amazon.com/cloudshell/latest/userguide/limits.html) of 200 hours per region per account (shared across all IAM principals — ~8 days continuous, increasable via Service Quotas)
+- `--transport punch` only works with non-symmetric NAT (most residential, fails on some corporate firewalls). On GCP, `--transport ssh` is the way around it; AWS has no equivalent
+- AWS CloudShell has a [monthly usage quota](https://docs.aws.amazon.com/cloudshell/latest/userguide/limits.html) of 200 hours per region per account (shared across all IAM principals — ~8 days continuous, increasable via Service Quotas). GCP Cloud Shell allows 50 hours per week
+- GCP gives no choice of region, so no geo-shifting
 - Sessions auto-terminate after 12 hours of continuous use
 - Not for production use — it's a creative hack for privacy/geo-shifting
-- One connection at a time per CloudShell environment
+- One connection at a time per cloud shell environment
 
 ## Project structure
 
 ```
 cloudshell_vpn/
 ├── __init__.py       # Package marker
-├── __main__.py       # CLI: region picker, PKI generation, orchestration
+├── __main__.py       # CLI, .ovpn generation, AWS orchestration
 ├── common.py         # Shared: boto3 client, Shell, STUN, PKI generation
-├── agent_openvpn.py  # OpenVPN agent (runs inside CloudShell)
+├── gcp.py            # GCP backend: Cloud Shell API, ephemeral key, SSH shell
+├── gcp_run.py        # GCP orchestration (punch and ssh transports)
+├── agent_openvpn.py  # OpenVPN agent (runs inside the cloud shell, either provider)
 ├── tunnel_openvpn.py # OpenVPN relay (runs on laptop)
-└── tui.py            # Terminal UI (region picker, status display)
+└── tui.py            # Terminal UI (region picker, status display — AWS only)
 ```
 
 ## Generated files
